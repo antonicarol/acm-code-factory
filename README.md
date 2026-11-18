@@ -4,6 +4,10 @@ A team of [Claude Code](https://claude.com/claude-code) agents that turns a requ
 
 It is an engine, not a project: any number of **hubs** (one folder per project, with its own `workspace.json`, context and specs) use the same engine. A change to the engine reaches every hub at once; there is no build step.
 
+[![code-factory in 25 seconds: from one sentence to a reviewed PR (click to play)](docs/media/code-factory-demo.jpg)](docs/media/code-factory-demo.mp4)
+
+<sub>25-second demo (click to play). Made with [HyperFrames](https://github.com/heygen-com/hyperframes) from this repo.</sub>
+
 ```
 you ──► orchestrator ──► coordinator (one per task, own worktree)
                            ├─ specker / scout        spec and plan
