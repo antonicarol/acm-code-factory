@@ -2,7 +2,7 @@
 
 The factory turns a request ("add X to screen Y", a ticket) into a **reviewed and tested PR**. A team of Claude Code agents carries it from start to finish: spec, plan, implementation, gate, review, tests and delivery. You approve at the points you choose.
 
-Up to date with commit `ae12141` (2026-11-01) · `factory` kit 0.33.0. To bring them up to date: the `docs-sync` skill; `factory docs --check` warns about anything that appears on no page.
+Up to date with commit `21071f7` (2026-11-18) · `factory` kit 0.33.0. To bring them up to date: the `docs-sync` skill; `factory docs --check` warns about anything that appears on no page.
 
 ## Start here
 

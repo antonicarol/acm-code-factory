@@ -10,7 +10,7 @@ description: Brings docs/ up to date with engine commits that are not reflected 
 ## 1. What has changed
 
 - The marker is in `docs/README.md`: `Up to date with commit <sha> (<date>)`.
-- `git log --format='%h %s' <sha>..HEAD -- . ':!docs'` gives the pending commits. Ignore those that only touch `EXPORT.md` or `CLAUDE.md`.
+- `git log --format='%h %s' <sha>..HEAD -- . ':!docs'` gives the pending commits. Ignore those that only touch `AGENTS.md` (`CLAUDE.md` is a link to it).
 - A commit that already changed `docs/` may have left pages behind: look at its diff anyway, but quickly.
 - `bin/docs --check` lists commands, agents, skills, panels, hooks and `workspace.json` keys that no page names.
 
@@ -46,7 +46,7 @@ A change usually touches two pages: the reference one (`3x`) and the one that te
 - Read the diff and the code, not just the commit message. Document what the code does today, not the history ("before..., now...").
 - Edit the sentence or row that already exists; do not add a section per commit. If something was removed from the engine, remove it from the docs too.
 - Same tone as the rest: English, short sentences, commands and paths in backticks.
-- The rules in `CLAUDE.md` apply here: nothing specific to a project except in an **Example** block.
+- The rules in `AGENTS.md` apply here: nothing specific to a project except in an **Example** block.
 
 ## 4. Wrap up
 
