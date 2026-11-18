@@ -21,7 +21,11 @@
     { "name": "web", "repo": "web", "cmd": "pnpm dev", "ready": "http://localhost:3000/" },
     { "name": "api", "repo": "api", "cmd": "npm run dev", "ready": "http://localhost:4000/health" }
   ],
-  "panels": { "hub": ["agentes", "tareas", "prs", "decisions", "servidores"] },
+  "panels": {
+    "hub": ["agentes", "tareas", "prs", "decisions", "servidores"],
+    "task": ["agentes", "recursos", "cambios"],
+    "keys": { "3": "decisions" }
+  },
   "agents": {
     "coordinator": { "notes": "Money is stored and sent as integer cents (see decisions/0002). Never introduce floats for prices." }
   },

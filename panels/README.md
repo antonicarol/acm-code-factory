@@ -8,6 +8,8 @@ Every Herdr panel is a list with the same behavior (`factory panel`):
 - `ctrl-r` refreshes, it reloads itself every `REFRESH` seconds (not while minimized), and what an
   action prints appears next to the shortcuts.
 
+Which panels you see is the hub's choice: `workspace.json` → `panels.hub` (next to the orchestrator) and `panels.task` (next to each coordinator); `panels.keys` rebinds alt+2…5. The engine's panels are only the defaults.
+
 A new panel = a `panels/<name>.sh` file + its name in `workspace.json` → `panels.hub` (the panel to the
 right of the orchestrator, `factory hub-panel`). Try it standalone with `factory panel <name>`.
 

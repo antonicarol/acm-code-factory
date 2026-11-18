@@ -20,7 +20,7 @@
 name=${1:?usage: panel <name> [--rows|--fetch|--run <key> <row>] [args]}; shift
 # The hub's own panels first (<hub>/panels/<name>.sh: new ones, or one of the engine's replaced), then the engine's.
 def="$HUB/panels/$name.sh"; [ -f "$def" ] || def="$ENGINE/panels/$name.sh"
-[ -f "$def" ] || { echo "no panel $name (ni $HUB/panels/$name.sh ni $ENGINE/panels/$name.sh)" >&2; exit 1; }
+[ -f "$def" ] || { echo "no panel $name (neither $HUB/panels/$name.sh nor $ENGINE/panels/$name.sh)" >&2; exit 1; }
 mode=ui; case "${1:-}" in --rows|--fetch|--preview|--folded) mode=${1#--}; shift ;; --run) mode=run; key=$2; row=$3; shift 3 ;; esac
 
 TITLE=$name HELP="" REFRESH=0 INPUT=1 INTERACTIVE=""
