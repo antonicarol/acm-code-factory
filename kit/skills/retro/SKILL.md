@@ -25,7 +25,7 @@ Never secrets, tokens, real personal data or machine-specific absolute paths.
 
 ## 2. Ask the user
 
-Read the files the candidates would go to (step 3) first and drop what is already there. Then show at most 5, ranked by the round each would save, numbered, in the user's language, each with its type, scope and destination, and ask in one message: which to keep, edit or drop, and "¿Has aprendido o visto algo más que valga la pena apuntar?". Nothing is written without their yes; no candidates and nothing from the user → say so and stop.
+Read the files the candidates would go to (step 3) first and drop what is already there. Then show at most 5, ranked by the round each would save, numbered, in the user's language, each with its type, scope and destination, and ask in one message: which to keep, edit or drop, and "Did you learn or notice anything else worth writing down?". Nothing is written without their yes; no candidates and nothing from the user → say so and stop.
 
 ## 3. Write the approved ones
 

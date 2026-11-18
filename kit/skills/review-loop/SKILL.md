@@ -44,7 +44,7 @@ Nitpicks from a review body: answer them all in **one** PR comment (`gh pr comme
 
 ## 5. Report
 
-Add to the task's `result.md` (change folder, or `briefs/<task>/` for a lite task) under "Revisión de la PR": round n, what was fixed / declined / left for the user. Tell the user in a few lines. The PR is **ready to merge** when no thread is pending and the checks are green (`gh pr checks`); say so, and never merge it yourself.
+Add to the task's `result.md` (change folder, or `briefs/<task>/` for a lite task) under "PR review": round n, what was fixed / declined / left for the user. Tell the user in a few lines. The PR is **ready to merge** when no thread is pending and the checks are green (`gh pr checks`); say so, and never merge it yourself.
 
 After `rounds` fix rounds on the same PR, stop and hand the rest to the user.
 

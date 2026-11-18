@@ -26,12 +26,12 @@ Early and opinionated. It was built for and used on real projects, but expect ro
 
 ## Requirements
 
-[Claude Code](https://claude.com/claude-code) (with an account), [Herdr](https://herdr.dev) (terminal multiplexer, tested with 0.9.5), [OpenSpec](https://github.com/Fission-AI/OpenSpec), `git`, `gh`, `jq`, `node`, `python3`. Optional: `fzf`, `git-delta`, `lazygit`, `neovim`, Ghostty, Docker, `cursor-agent`. Details in [docs/10-instalar.md](docs/10-instalar.md).
+[Claude Code](https://claude.com/claude-code) (with an account), [Herdr](https://herdr.dev) (the app the agents run in, tested with 0.9.5), [OpenSpec](https://github.com/Fission-AI/OpenSpec), `git`, `gh`, `jq`, `node`, `python3`. Optional: `fzf`, `git-delta`, `lazygit`, `neovim`, Ghostty, Docker, `cursor-agent`. Details in [docs/10-instalar.md](docs/10-instalar.md).
 
 ## Quick start
 
 ```sh
-git clone <this repo> ~/code-factory
+git clone https://github.com/antonicarol/acm-code-factory.git ~/code-factory
 ~/code-factory/install.sh            # checks tools, links ~/.local/bin/factory
 
 factory hub-init ~/projects/my-hub my-store
@@ -74,4 +74,4 @@ Read [AGENTS.md](AGENTS.md): what belongs in the engine and what in a hub, how t
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The `kit/skills/impeccable/` skill is third-party code under Apache-2.0 (its own `LICENSE`, source in `UPSTREAM`).

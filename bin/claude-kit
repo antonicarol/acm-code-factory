@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # claude (or the provider set with factory provider) with the workspace kit loaded; bin/lib/kit-settings.json empties CLAUDE_CODE_PLUGIN_DIRS (no extra plugin dirs
-# from your shell) and switches off the global plugins unrelated to the factory (runpod, postman, token-farm, swift-lsp:
-# ~6.6k tokens of tools and skills on every turn).
+# from your shell) and can switch off global plugins unrelated to the factory (`enabledPlugins` in bin/lib/kit-settings.json: every
+# plugin you do not need costs its tools and skills on every turn).
 # Usage: claude-kit <agent> [claude args...]   e.g. claude-kit orchestrator -n orchestrator
 set -euo pipefail
 . "$(dirname "$0")/lib/hub.sh"

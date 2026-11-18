@@ -36,7 +36,7 @@ herdr agent wait <name> --until done --until blocked --timeout 600000
 ```
 
 - Map a task to its coordinator by its Herdr agent name (the task name lowercased, max 32 chars, e.g. `proj-2299-billing-fix`) or by `terminal_title_stripped` = `<TICKET>-<n> · coordinator`.
-- `blocked` means a dialog is open for the **user** (a permission prompt, an AskUserQuestion). An agent that ended its turn asking for a "sí" in plain text (spec or plan approval) shows `done`/`idle`: read its last lines before calling it finished. Tell the user which workspace (`ctrl+b w`, or they can ask you to focus it). **Never answer a blocked dialog for them** and never send keys to it.
+- `blocked` means a dialog is open for the **user** (a permission prompt, an AskUserQuestion). An agent that ended its turn asking for a "yes" in plain text (spec or plan approval) shows `done`/`idle`: read its last lines before calling it finished. Tell the user which workspace (`ctrl+b w`, or they can ask you to focus it). **Never answer a blocked dialog for them** and never send keys to it.
 - Reading is always fine; `agent read` does not mark anything as seen.
 
 ## Talking to a coordinator

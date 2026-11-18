@@ -124,7 +124,7 @@ Without the `notion` key there is no task manager: no `notion` panel, no Jared o
 | `<hub>/.openspec-store/store.yaml` | The hub's OpenSpec store id |
 | `<hub>/AGENTS.md` | Table of repos, branches, ticket format, what is forbidden (read by the orchestrator and specker) |
 | `~/.config/factory/hub` | Default hub |
-| `bin/lib/kit-settings.json` | Common settings for kit sessions (plugins turned off) |
+| `bin/lib/kit-settings.json` | Common settings for kit sessions: `deny` rules on `.env*`, and an `enabledPlugins` map (empty by default) to switch off global plugins you do not want in kit sessions |
 | `kit/.claude-plugin/plugin.json` | Kit version |
 | `kit/.mcp.json` | Kit MCPs (`local-db`) |
 | `kit/hooks/hooks.json` | Subagent and test-cleanup hooks |

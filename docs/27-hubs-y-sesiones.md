@@ -45,7 +45,7 @@ Every kit session starts with `--plugin-dir <engine>/kit --settings "$(bin/lib/k
 - `env.FACTORY_HUB` and `env.FACTORY_HOME`, which hooks, agents and skills use to find the hub and the engine;
 - the engine as an extra directory (`permissions.additionalDirectories`).
 
-`kit-settings.json` also turns off global plugins that have nothing to do with the factory, so you don't pay for their tools on every turn, and carries read `deny` rules on `.env` and `.env.*`: the harness checks them before any classifier, so "`.env*` files are never read" doesn't depend on the prompt alone (they don't stop a script the agent runs from opening them: a sandbox would limit that). A kit change is picked up when the session **starts**: an open orchestrator or coordinator keeps the kit it started with.
+`kit-settings.json` has an `enabledPlugins` map (empty by default): list global plugins as `"name@marketplace": false` to keep their tools out of kit sessions, so you don't pay for them on every turn. It also carries read `deny` rules on `.env` and `.env.*`: the harness checks them before any classifier, so "`.env*` files are never read" doesn't depend on the prompt alone (they don't stop a script the agent runs from opening them: a sandbox would limit that). A kit change is picked up when the session **starts**: an open orchestrator or coordinator keeps the kit it started with.
 
 ## Provider: Claude or Cursor
 
