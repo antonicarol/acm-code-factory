@@ -6,3 +6,6 @@ node_modules/
 .tasks/
 .env
 .env.*
+
+# Output of the /brag skill (videos, thumbnails): local only
+brag-output/
