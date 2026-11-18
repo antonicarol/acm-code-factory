@@ -4,7 +4,7 @@ A team of [Claude Code](https://claude.com/claude-code) agents that turns a requ
 
 It is an engine, not a project: any number of **hubs** (one folder per project, with its own `workspace.json`, context and specs) use the same engine. A change to the engine reaches every hub at once; there is no build step.
 
-[![code-factory: from one sentence to a reviewed PR](docs/media/code-factory-demo.gif)](docs/media/code-factory-demo.mp4)
+![code-factory: from one sentence to a reviewed PR](docs/media/code-factory-demo.gif)
 
 ```
 you ──► orchestrator ──► coordinator (one per task, own worktree)
