@@ -41,7 +41,7 @@ task → retro (candidates) → your "yes" per item → learnings/<repo>.md · l
 ```
 
 - **Candidates**: what had to be discovered, wrong assumptions that cost a round, documentation lines that turned out to be false, your corrections and the testers' `guideNotes`. Left out: what can be read in the code or the spec, and what only mattered to this task.
-- **Format**: a line of up to 200 characters, `date · type · text · task · author`, with type `trampa`, `hecho`, `receta` or `cómo trabajamos`, in the section for the service or app.
+- **Format**: a line of up to 200 characters, `date · type · text · task · author`, with type `pitfall`, `fact`, `recipe` or `how we work`, in the section for the service or app.
 - **Approval**: at most 5 candidates, ordered by the round they would save; only what you approve is written. A wrong guide line is fixed in place, not supplemented with another.
 - **Who reads them**: coordinator and specker before planning (the section for what the task touches), the ui-designer (the `ui` repo's section) and the workers, through the coordinator.
 - **Never**: secrets, tokens, real personal data or absolute paths of the machine.

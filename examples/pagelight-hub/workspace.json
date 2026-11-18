@@ -6,6 +6,12 @@
   "uiEnv": "local",
   "worktrees": "on-demand",
   "reviewLoop": { "fixes": "ask", "resolveThreads": "bot-only", "bots": [], "rounds": 2 },
+  "tracker": {
+    "type": "github-issues",
+    "repo": "pagelight/tracker",
+    "status": { "started": "status:in-progress", "pr": "status:in-review", "merged": "status:merged" },
+    "order": ["status:todo", "status:in-progress", "status:in-review", "status:merged"]
+  },
   "repos": {
     "web":   { "roles": ["ui"],  "base": "main", "setup": "cp \"$SRC/.env\" . && pnpm install --frozen-lockfile" },
     "api":   { "roles": ["api"], "base": "main", "setup": "cp \"$SRC/.env\" . && npm ci" },
@@ -15,7 +21,10 @@
     { "name": "web", "repo": "web", "cmd": "pnpm dev", "ready": "http://localhost:3000/" },
     { "name": "api", "repo": "api", "cmd": "npm run dev", "ready": "http://localhost:4000/health" }
   ],
-  "panels": { "hub": ["agentes", "tareas", "prs", "servidores"] },
+  "panels": { "hub": ["agentes", "tareas", "prs", "decisions", "servidores"] },
+  "agents": {
+    "coordinator": { "notes": "Money is stored and sent as integer cents (see decisions/0002). Never introduce floats for prices." }
+  },
   "routing": {
     "tiny":   { "worker": "haiku",  "reviewer": "sonnet", "reviewerEffort": "medium" },
     "low":    { "worker": "sonnet", "reviewer": "sonnet", "reviewerEffort": "medium" },
@@ -31,7 +40,7 @@
       "env": ["*.env.example"]
     },
     "repos": {
-      "web": { "base": "main", "checks": ["pnpm exec tsc --noEmit", "pnpm exec eslint .", "pnpm test"] },
+      "web": { "base": "main", "checks": ["pnpm exec nuxi typecheck", "pnpm exec eslint .", "pnpm test"] },
       "api": { "base": "main", "checks": ["npx tsc --noEmit", "npm run lint", "npm test"] }
     }
   },

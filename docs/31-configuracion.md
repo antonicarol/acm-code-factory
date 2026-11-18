@@ -2,7 +2,7 @@
 
 A file at the root of each hub; its presence is what makes a folder a hub ([Hubs, sessions and extensions](27-hubs-y-sesiones.md#which-hub-is-used)). Scripts read it with `jq` and pass what is needed to the coordinator in its first message; prompts read the rest when they need it. A change affects tasks that start afterward. `factory task-start` saves the values each task ran with in `.board/tasks/<task>.json`.
 
-Two complete examples: `templates/hub/workspace.json` (what `factory hub-init` copies) and `examples/web-app/workspace.json`.
+Two complete examples: `templates/hub/workspace.json` (what `factory hub-init` copies) and `examples/pagelight-hub/workspace.json`.
 
 ## Task flow
 

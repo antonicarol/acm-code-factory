@@ -19,10 +19,10 @@ fetch(){
 }
 
 list(){
-  [ -s "$cache" ] || { printf ' \t\033[2m  sin PRs abiertas (o cargando…)\033[0m\n'; return; }
+  [ -s "$cache" ] || { printf ' \t\033[2m  no open PRs (or loading…)\033[0m\n'; return; }
   local now; now=$(date +%s)
   while IFS=$'\t' read -r url repo num rev chk thr draft upd title; do
-    case $rev in APPROVED) r=$'\033[32m✓ aprobada '; ;; CHANGES_REQUESTED) r=$'\033[31m✗ cambios  '; ;; REVIEW_REQUIRED) r=$'\033[33m○ pendiente'; ;; *) r=$'\033[2m· sin review'; ;; esac
+    case $rev in APPROVED) r=$'\033[32m✓ approved '; ;; CHANGES_REQUESTED) r=$'\033[31m✗ changes  '; ;; REVIEW_REQUIRED) r=$'\033[33m○ pending  '; ;; *) r=$'\033[2m· no review'; ;; esac
     case $chk in SUCCESS) c=$'\033[32m●'; ;; FAILURE|ERROR) c=$'\033[31m●'; ;; PENDING|EXPECTED) c=$'\033[33m◐'; ;; *) c=$'\033[2m·'; ;; esac
     t=""; [ "$thr" -gt 0 ] && t=$'\033[33m'"💬$thr"
     d=""; [ "$draft" = true ] && d=$'\033[2m[draft] '

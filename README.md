@@ -39,7 +39,7 @@ factory orchestrator -n orchestrator # inside Herdr
 factory task "Add a dark-mode toggle to the settings screen"
 ```
 
-An example hub configuration is in [`examples/web-app/`](examples/web-app/). The full walkthrough is six short pages, starting at [docs/README.md](docs/README.md); `factory docs` opens them as a searchable web page.
+A complete example hub, filled in for a fictional bookshop (a finished task, decisions, learnings, a custom panel and tracker), is in [`examples/pagelight-hub/`](examples/pagelight-hub/). The full walkthrough is six short pages, starting at [docs/README.md](docs/README.md); `factory docs` opens them as a searchable web page.
 
 ## Documentation
 

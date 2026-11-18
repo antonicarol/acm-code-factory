@@ -52,7 +52,7 @@ A repo with no entry has no gate. `protected` and `attention` already come in th
 | The PR's comments handled automatically | `reviewLoop` |
 | Your own skills or notes for an agent | `agents.<agent>` |
 
-All of them, with their default value and who reads them: [Configuration reference](31-configuracion.md). A complete example hub: `examples/web-app/workspace.json`.
+All of them, with their default value and who reads them: [Configuration reference](31-configuracion.md). A complete example hub: `examples/pagelight-hub/workspace.json`.
 
 ## Check
 

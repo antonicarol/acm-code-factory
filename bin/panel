@@ -7,7 +7,7 @@
 # factory fold), ctrl-r refresh, a background refresh every $REFRESH s, action output shown in the header.
 #
 # A definition (panels/<name>.sh, sourced; positional args of the panel are in "$@"):
-#   TITLE="MIS PRS"               header title                     HELP="enter: abrir"   key hints after it
+#   TITLE="MY PRS"               header title                     HELP="enter: open"   key hints after it
 #   REFRESH=120                   background refresh, s (0 = off)  INPUT=1               0 hides the search line
 #   rows()     required: one row per line, "<key>\t<shown text>" (ANSI allowed); <key> is what actions get
 #   fetch()    optional: slow refresh (API, cache) run before the rows reload

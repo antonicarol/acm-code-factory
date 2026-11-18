@@ -12,20 +12,20 @@ DOCS = ROOT / "docs"
 def undocumented():
     text = "\n".join(f.read_text() for f in DOCS.glob("*.md"))
     names = {
-        "comando": [p.name for p in (ROOT / "bin").iterdir() if p.is_file()],
-        "agente": [p.stem for p in (ROOT / "kit/agents").glob("*.md")],
+        "command": [p.name for p in (ROOT / "bin").iterdir() if p.is_file()],
+        "agent": [p.stem for p in (ROOT / "kit/agents").glob("*.md")],
         "skill": [p.name for p in (ROOT / "kit/skills").iterdir() if p.is_dir()],
         "panel": [p.stem for p in (ROOT / "panels").glob("*.sh")],
         "hook": [p.name for p in (ROOT / "kit/hooks").glob("*.sh")],
     }
     keys = set()
-    for ws in (ROOT / "templates/hub/workspace.json", ROOT / "examples/web-app/workspace.json"):
+    for ws in (ROOT / "templates/hub/workspace.json", ROOT / "examples/pagelight-hub/workspace.json"):
         for k, v in json.loads(ws.read_text()).items():
             keys.add(k)
-            # ponytail: one level down; repos/routing/agents/gate.repos children are user-chosen names, not keys
-            if isinstance(v, dict) and k not in ("repos", "routing", "agents"):
+            # ponytail: one level down; repos/routing/agents/tracker/gate.repos children are user-chosen names or adapter settings, not keys
+            if isinstance(v, dict) and k not in ("repos", "routing", "agents", "tracker"):
                 keys.update(f"{k}.{sub}" for sub in v if sub != "repos")
-    names["clave de workspace.json"] = sorted(keys)
+    names["workspace.json key"] = sorted(keys)
     word = lambda n, s: re.search(rf"(?<![\w.-]){re.escape(n)}(?![\w-])", s)
 
     def documented(n):
@@ -39,7 +39,7 @@ def undocumented():
 
 missing = undocumented()
 for kind, n in missing:
-    print(f"sin documentar ({kind}): {n}", file=sys.stderr)
+    print(f"undocumented ({kind}): {n}", file=sys.stderr)
 if "--check" in sys.argv:
     sys.exit(1 if missing else 0)
 

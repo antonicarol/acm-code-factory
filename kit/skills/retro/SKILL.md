@@ -18,7 +18,7 @@ From this session: what you or your subagents had to discover, a wrong guess tha
 Drop: behaviour readable in the code or the spec (status codes, validation rules, limits), details that only mattered to this task, anything a scout finds with one grep. Merge candidates about the same thing into one line. When a guide line is wrong, fix that line instead of adding a note.
 
 Each candidate is ONE line, at most 200 chars, with:
-- **type**: `trampa` (looks like X, is Y) · `hecho` (a fact about the code or a service) · `receta` (test data, a command that works) · `cómo trabajamos` (a team convention or a user preference);
+- **type**: `pitfall` (looks like X, is Y) · `fact` (a fact about the code or a service) · `recipe` (test data, a command that works) · `how we work` (a team convention or a user preference);
 - **scope**: repo and service/app (`api` · `billing-service`), or `workflow` when it is not about one repo.
 
 Never secrets, tokens, real personal data or machine-specific absolute paths.
@@ -30,15 +30,15 @@ Read the files the candidates would go to (step 3) first and drop what is alread
 ## 3. Write the approved ones
 
 Destination by type and scope:
-- `receta`, or anything about running tests, users or test data → the testing guide, as the tester's `guideNotes` say (`testing/<repo>/…/TESTING.md`, under its section).
+- `recipe`, or anything about running tests, users or test data → the testing guide, as the tester's `guideNotes` say (`testing/<repo>/…/TESTING.md`, under its section).
 - everything else about one repo → `learnings/<repo>.md` (repo = its basename, e.g. `learnings/api.md`), under a `## <service or app>` heading (`## general` for the whole repo). Create the file or heading if missing.
 - `workflow` → `learnings/workflow.md` (create it if missing).
 
 Line format:
 ```
-- 2026-10-26 · trampa · `answer` devuelve 200, no 204 · PROJ-123 · ana
+- 2026-10-26 · pitfall · `answer` returns 200, not 204 · PROJ-123 · ana
 ```
-date · type · text · source (ticket or task name; `sesión` if none) · who (the user's git `user.name` or first name).
+date · type · text · source (ticket or task name; `session` if none) · who (the user's git `user.name` or first name).
 
 Before appending, look for an entry on the same thing: if it says the same, skip it; if it is outdated or wrong, replace that line (new date) instead of adding a contradicting one.
 

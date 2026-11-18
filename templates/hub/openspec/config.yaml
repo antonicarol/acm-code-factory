@@ -10,4 +10,4 @@ rules:
     - Write prose in English; keep code identifiers, paths and endpoints as they are
   tasks:
     - Never include commit, push or PR tasks (shipping is a separate step)
-    - Never include manual or by-hand QA tasks (they block the change); list manual checks in the proposal under **Decisions / Out of scope** as "QA manual: …"
+    - 'Never include manual or by-hand QA tasks (they block the change); list manual checks in the proposal under **Decisions / Out of scope** as "Manual QA: …"'
