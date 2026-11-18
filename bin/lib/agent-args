@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# The command line of a kit session for the current provider (bin/lib/provider), from claude's arguments, NUL-separated:
+# the executable first. claude: unchanged (but `env CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` first if agents.<a>.codeMode). cursor: --agent factory:<a> becomes the first words of the prompt (read
+# that agent's file: it is the role) and --model its mapped model; --settings and -n are dropped (cursor has neither:
+# kit-dir writes the hub and engine paths into the agents), the engine is an --add-dir, plus the provider's flags
+# (cursor: --trust --force --approve-mcps, so a session does not stop on a plan or a command prompt).
+#   agent-args <claude args...>        used by claude-kit and start-agent
+. "$(dirname "$0")/hub.sh"
+p=$("$ENGINE/bin/lib/provider")
+out(){ printf '%s\0' "$@"; }
+if [ "$p" = claude ]; then
+  # Experimental: workspace.json agents.<agent>.codeMode = true starts that agent in Claude Code's Code Mode (docs/31).
+  a="" prev=""; for x in "$@"; do [ "$prev" = --agent ] && a=${x#factory:}; prev=$x; done
+  if [ -n "$a" ] && [ "$(jq -r --arg a "$a" '.agents[$a].codeMode // false' "$HUB/workspace.json" 2>/dev/null)" = true ]; then
+    out env CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 claude "$@"
+  else out claude "$@"; fi
+  exit
+fi
+args=() agent="" prompt="" kit=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --agent)      agent=${2#factory:}; shift 2 ;;
+    --plugin-dir) kit=$2; args+=(--plugin-dir "$2"); shift 2 ;;
+    --settings|-n|--name) shift 2 ;;
+    --add-dir|--model|--workspace) args+=("$1" "$2"); shift 2 ;;
+    -*)           args+=("$1"); shift ;;
+    *)            prompt=$1; shift ;;
+  esac
+done
+cfg=$("$ENGINE/bin/lib/provider" config)
+while IFS= read -r f; do args+=("$f"); done < <(jq -r '.flags // [] | .[]' <<<"$cfg")
+args+=(--add-dir "$ENGINE")
+if [ -n "$agent" ]; then
+  m=$(sed -n '2,10s/^model: *//p' "$kit/agents/$agent.md" | head -1); [ -n "$m" ] && args+=(--model "$m")
+  prompt="You are the factory $agent agent: read $kit/agents/$agent.md first, it is your whole role. ${prompt:-Start.}"
+fi
+out "$(jq -r '.exe' <<<"$cfg")" "${args[@]}" ${prompt:+"$prompt"}

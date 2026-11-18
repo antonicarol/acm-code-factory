@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<!--
+  Default changelog page of the engine. A hub replaces it with changelogs/template.html, keeping this contract
+  (the changelog agent fills it, nothing renders it for it):
+  - {{lang}} {{product}} {{title}} {{period}} {{headline}}: plain text, HTML-escaped. {{body}} (a feature) may also
+    hold <p>, <ul><li> and <strong>; nothing else.
+  - data-repeat="feature|improvement|fix|task": an example block, repeated once per entry (the example is removed).
+    Fields inside: {{name}} {{audience}} {{body}} {{video}} {{gif}} {{poster}} {{text}} {{links}}.
+    A feature without video loses its element marked data-if="video".
+  - data-section="features|improvements|fixes|internal|tasks": removed when it has no entries.
+  - Everything else (styles, header, footer, logo) is the hub's design and stays as it is. Assets go relative to
+    the page (assets/…), copied next to it, so the dated folder works on its own.
+-->
+<html lang="{{lang}}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{title}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Geist:wght@400;600;700&display=swap">
+<style>
+:root {
+  --paper: #fafaf8; --panel: #ffffff; --ink: #141414; --muted: #5f5f5f; --rule: #e6e4df;
+  --accent: #e8702a; --new: #1f8a5b; --better: #2f6fd6; --fix: #b4532a;
+  --display: "Instrument Serif", Georgia, serif; --sans: "Geist", system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --paper: #101010; --panel: #1a1a1a; --ink: #f4f4f4; --muted: #a0a0a0; --rule: #2a2a2a;
+          --accent: #ffc799; --new: #7fe0b0; --better: #9cc0ff; --fix: #ffab85; }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { overflow-x: clip; }
+body { background: var(--paper); color: var(--ink); font: 17px/1.6 var(--sans); }
+main { max-width: 920px; margin: 0 auto; padding: 72px 16px 96px; }
+header .product { color: var(--accent); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; font-size: 13px; }
+header h1 { font: 400 clamp(40px, 7vw, 68px)/1.05 var(--display); margin: 8px 0 6px; }
+header .period { color: var(--muted); font-size: 15px; }
+header .headline { font-size: 20px; margin-top: 28px; max-width: 64ch; }
+section { margin-top: 64px; }
+h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding-bottom: 10px; border-bottom: 1px solid var(--rule); margin-bottom: 24px; display: flex; gap: 10px; align-items: center; }
+h2::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--dot); }
+[data-section="features"] { --dot: var(--new); }
+[data-section="improvements"] { --dot: var(--better); }
+[data-section="fixes"] { --dot: var(--fix); }
+[data-section="internal"], [data-section="tasks"] { --dot: var(--muted); }
+.feature { background: var(--panel); border: 1px solid var(--rule); border-radius: 16px; overflow: hidden; margin-bottom: 28px; }
+.feature video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; }
+.feature .copy { padding: 24px 28px 28px; }
+.feature h3 { font: 400 32px/1.15 var(--display); }
+.feature .audience { color: var(--accent); font-size: 14px; font-weight: 600; margin: 4px 0 10px; }
+.feature p { color: var(--ink); max-width: 66ch; }
+ul.entries { list-style: none; display: grid; gap: 12px; }
+ul.entries li { padding-left: 18px; position: relative; }
+ul.entries li::before { content: ""; position: absolute; left: 0; top: .7em; width: 6px; height: 6px; border-radius: 50%; background: var(--dot); }
+details { color: var(--muted); font-size: 14px; }
+details summary { cursor: pointer; }
+details li { margin: 6px 0 0 18px; }
+a { color: inherit; text-underline-offset: 3px; }
+footer { margin-top: 80px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="product">{{product}}</div>
+    <h1>{{title}}</h1>
+    <div class="period">{{period}}</div>
+    <p class="headline">{{headline}}</p>
+  </header>
+
+  <section data-section="features">
+    <h2>New</h2>
+    <article class="feature" data-repeat="feature">
+      <video data-if="video" src="{{video}}" poster="{{poster}}" autoplay muted loop playsinline controls preload="metadata"></video>
+      <div class="copy">
+        <h3>{{name}}</h3>
+        <div class="audience">{{audience}}</div>
+        <p>{{body}}</p>
+      </div>
+    </article>
+  </section>
+
+  <section data-section="improvements">
+    <h2>Improvements</h2>
+    <ul class="entries"><li data-repeat="improvement">{{text}}</li></ul>
+  </section>
+
+  <section data-section="fixes">
+    <h2>Fixes</h2>
+    <ul class="entries"><li data-repeat="fix">{{text}}</li></ul>
+  </section>
+
+  <section data-section="internal">
+    <p class="muted">{{text}}</p>
+  </section>
+
+  <section data-section="tasks">
+    <details>
+      <summary>Included tasks</summary>
+      <ul><li data-repeat="task">{{name}} · {{links}}</li></ul>
+    </details>
+  </section>
+
+  <footer>{{product}} · {{period}}</footer>
+</main>
+</body>
+</html>

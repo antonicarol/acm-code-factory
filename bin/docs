@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+# Builds docs/index.html: the technical docs (docs/*.md) as one offline web page, with sidebar, per-page
+# table of contents, search, mermaid diagrams and light/dark theme. The .md files stay the source:
+# edit them and run this again. Also checks that every command, agent, skill, panel, hook and workspace.json key
+# is named somewhere in the docs. Usage: docs [--no-open]    docs --check (only the check; exit 1 if something is missing)
+import json, pathlib, re, subprocess, sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+DOCS = ROOT / "docs"
+
+
+def undocumented():
+    text = "\n".join(f.read_text() for f in DOCS.glob("*.md"))
+    names = {
+        "comando": [p.name for p in (ROOT / "bin").iterdir() if p.is_file()],
+        "agente": [p.stem for p in (ROOT / "kit/agents").glob("*.md")],
+        "skill": [p.name for p in (ROOT / "kit/skills").iterdir() if p.is_dir()],
+        "panel": [p.stem for p in (ROOT / "panels").glob("*.sh")],
+        "hook": [p.name for p in (ROOT / "kit/hooks").glob("*.sh")],
+    }
+    keys = set()
+    for ws in (ROOT / "templates/hub/workspace.json", ROOT / "examples/web-app/workspace.json"):
+        for k, v in json.loads(ws.read_text()).items():
+            keys.add(k)
+            # ponytail: one level down; repos/routing/agents/gate.repos children are user-chosen names, not keys
+            if isinstance(v, dict) and k not in ("repos", "routing", "agents"):
+                keys.update(f"{k}.{sub}" for sub in v if sub != "repos")
+    names["clave de workspace.json"] = sorted(keys)
+    word = lambda n, s: re.search(rf"(?<![\w.-]){re.escape(n)}(?![\w-])", s)
+
+    def documented(n):
+        if word(n, text):
+            return True
+        parent, _, leaf = n.partition(".")  # `localDb` | `{project, mysql?}`: the subkey on its parent's line counts
+        return leaf and any(word(parent, l) and word(leaf, l) for l in text.splitlines())
+
+    return [(kind, n) for kind, ns in names.items() for n in ns if not documented(n)]
+
+
+missing = undocumented()
+for kind, n in missing:
+    print(f"sin documentar ({kind}): {n}", file=sys.stderr)
+if "--check" in sys.argv:
+    sys.exit(1 if missing else 0)
+
+pages = []
+for f in sorted(DOCS.glob("*.md")):
+    text = f.read_text()
+    title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), f.stem)
+    pages.append({"id": "inicio" if f.stem == "README" else f.stem, "file": f.name, "title": title, "md": text})
+pages.sort(key=lambda p: (p["id"] != "inicio", p["id"]))  # README first
+
+data = json.dumps(pages, ensure_ascii=False).replace("</", "<\\/")
+out = DOCS / "index.html"
+out.write_text((DOCS / "_site.html").read_text().replace("/*PAGES*/[]", data))
+print(f"{len(pages)} pages → {out}")
+if "--no-open" not in sys.argv:
+    subprocess.run(["open", str(out)])

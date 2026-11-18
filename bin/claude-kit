@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# claude (or the provider set with factory provider) with the workspace kit loaded; bin/lib/kit-settings.json empties CLAUDE_CODE_PLUGIN_DIRS (no extra plugin dirs
+# from your shell) and switches off the global plugins unrelated to the factory (runpod, postman, token-farm, swift-lsp:
+# ~6.6k tokens of tools and skills on every turn).
+# Usage: claude-kit <agent> [claude args...]   e.g. claude-kit orchestrator -n orchestrator
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+agent=$1; shift
+if [ "$agent" = orchestrator ]; then
+  # A hub with its own session (herdr.session) started from another one: its tasks and panels would land there.
+  if [ -n "$HUB_SESSION" ] && [ "${HERDR_ENV:-}" = 1 ] && [ "${HERDR_SOCKET_PATH:-}" != "$HOME/.config/herdr/sessions/$HUB_SESSION/herdr.sock" ]; then
+    echo "warning: this hub lives in the Herdr session '$HUB_SESSION' and you are in another one. Open it with: herdr --session $HUB_SESSION" >&2
+  fi
+  if [ "${HERDR_ENV:-}" = 1 ]; then
+    # Its Herdr workspace takes the hub's label (prefix+a jumps to it).
+    herdr workspace rename "$HERDR_WORKSPACE_ID" "$HUB_LABEL" >/dev/null 2>&1 || true
+    # Named "orchestrator" in the sidebar, once claude is up (Herdr names are unique: with two hubs open only the
+    # first gets it). Scripts find a hub's orchestrator by title and cwd (orch_pane in lib/hub.sh), never by name.
+    (sleep 8; herdr agent rename "$HERDR_PANE_ID" orchestrator) >/dev/null 2>&1 &
+    # Hub panel on the right: agent board + my open PRs (skipped if this workspace already has it).
+    "$ENGINE/bin/hub-panel" "$HERDR_PANE_ID" >/dev/null 2>&1 || true
+  fi
+  mkdir -p "$HUB/.board"
+  # PR watcher: PRs open or merged (Notion → Review / To test), plus review comments and merge conflicts. One instance.
+  nohup "$ENGINE/bin/pr-watch" >> "$HUB/.board/pr-watch.log" 2>&1 & disown
+  # Machine watcher: kills dead workspace processes (orphaned test runners, servers of closed tasks), warns on memory/CPU. One instance.
+  nohup "$ENGINE/bin/sys-watch" >> "$HUB/.board/sys-watch.log" 2>&1 & disown
+fi
+# Its pane, for orch_pane (lib/hub.sh): a provider other than claude does not set the "orchestrator" title.
+[ "$agent" = orchestrator ] && [ -n "${HERDR_PANE_ID:-}" ] && echo "$HERDR_PANE_ID" > "$HUB/.board/orchestrator.pane"
+# claude, or the provider's CLI with the same kit (factory provider; bin/lib/agent-args translates the arguments).
+# A provider other than claude (factory provider cursor) starts cursor-agent here; Herdr detects it as kind cursor.
+[ "$agent" = orchestrator ] && [ "$("$ENGINE/bin/lib/provider")" != claude ] && echo "orchestrator: $("$ENGINE/bin/lib/provider")" >&2
+cmd=(); while IFS= read -r -d '' a; do cmd+=("$a"); done < <("$ENGINE/bin/lib/agent-args" --plugin-dir "$("$ENGINE/bin/lib/kit-dir")" \
+  --agent "factory:$agent" --settings "$("$ENGINE/bin/lib/kit-settings")" "$@")
+exec "${cmd[@]}"

@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Quick review of a task's changes: header with each repo's branch → base and its commits; list of every
+# file the task touched against its base (+/-, ● = not committed yet); delta diff of the selected file.
+# Refreshes every 3 s while the agents work. enter = Neovim diff of that file vs base (diffview),
+# ctrl-e = edit it in Neovim at its first change, ctrl-l = lazygit, ctrl-r = refresh, esc = quit.
+# Notes for the agent: ctrl-n = note on the selected file (line + comment), ctrl-o = edit the notes,
+# ctrl-s = send them to the task's coordinator (the Herdr agent whose cwd is this folder) as one batch.
+# Neovim runs with the pane zoomed (back to normal on :q).
+# Run it in a repo or in a task folder (.tasks/<task>/, one folder per repo). The task panel uses it.
+# Polls the shared checkout every 3 s: never take index.lock (git status/diff would, to refresh stat info).
+export GIT_OPTIONAL_LOCKS=0
+self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+repos(){ local root; root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+         if [ -n "$root" ] && [ ! -e "$root/workspace.json" ]; then echo "$root"   # a hub is a repo too: not this one
+         else for d in */; do [ -e "$d.git" ] && (cd "$d" && pwd); done; fi; }
+# The hub's workspace.json, if we are in one (a task folder or a hub repo); repos outside a hub have none.
+cfg=$( . "$(dirname "$0")/lib/hub.sh" >/dev/null 2>&1 && echo "$HUB/workspace.json")
+# Base = the hub's repos.<repo>.base (key = the repo's path in the hub; in a task folder, its basename), if origin has
+# it; else the remote branch (staging, main or master) this branch is fewest commits ahead of.
+base(){ local r=$1 b best="" n min=999999 hub
+        if [ -n "$cfg" ]; then hub=$(dirname "$cfg")
+          b=$(jq -r --arg p "${r#"$hub"/}" --arg n "$(basename "$r")" '.repos // {} | to_entries
+                | (map(select(.key == $p)) + map(select(.key | split("/") | last == $n)))[0].value.base // empty' "$cfg" 2>/dev/null)
+          [ -n "$b" ] && git -C "$r" rev-parse -q --verify "origin/$b" >/dev/null && { echo "$b"; return; }
+        fi
+        for b in staging main master; do
+          git -C "$r" rev-parse -q --verify "origin/$b" >/dev/null || continue
+          n=$(git -C "$r" rev-list --count "origin/$b..HEAD"); [ "$n" -lt "$min" ] && { min=$n; best=$b; }
+        done; echo "$best"; }
+# Merge-base with the base ($2 = the base, when the caller already has it).
+mb(){ git -C "$1" merge-base HEAD "origin/${2:-$(base "$1")}" 2>/dev/null || git -C "$1" rev-parse HEAD; }
+
+header(){
+  local r b m n
+  while read -r r; do
+    b=$(base "$r"); m=$(mb "$r" "$b"); n=$(git -C "$r" rev-list --count "$m..HEAD")
+    printf '\033[1m%s\033[0m  %s → %s · %s commit%s\n' "$(basename "$r")" "$(git -C "$r" branch --show-current)" "${b:-?}" "$n" "$([ "$n" = 1 ] || echo s)"
+    git -C "$r" log --format='  %C(yellow)%h%C(reset) %s %C(dim)(%cr)%C(reset)' --color=always -n 8 "$m..HEAD"
+  done < <(repos)
+  n=$(grep -c '^- ' "$(notes)" 2>/dev/null) && printf '\033[33m%s note%s not sent\033[0m \033[2m(ctrl-o view · ctrl-s send)\033[0m\n' "$n" "$([ "$n" = 1 ] || echo s)"
+}
+
+list(){
+  local r m any=""
+  while read -r r; do
+    m=$(mb "$r")
+    # uncommitted paths (tracked changes + untracked) get a ●
+    local dirty; dirty=$(git -C "$r" status --porcelain | cut -c4-)
+    { git -C "$r" diff --numstat "$m" -- ; git -C "$r" ls-files --others --exclude-standard | while read -r f; do echo "$(wc -l < "$r/$f" | tr -d ' ')	0	$f"; done; } |
+    while IFS=$'\t' read -r add del path; do
+      any=1
+      mark=" "; grep -qxF "$path" <<<"$dirty" && mark=$'\033[33m●\033[0m'
+      printf '%s\t%s\t%s \033[32m+%-4s\033[31m-%-4s\033[0m %s \033[2m%s\033[0m\n' "$r" "$path" "$mark" "$add" "$del" "$path" "$(basename "$r")"
+    done
+  done < <(repos)
+}
+
+diff1(){ local r=$1 p=$2 w=${FZF_PREVIEW_COLUMNS:-100}
+  if git -C "$r" ls-files --error-unmatch -- "$p" >/dev/null 2>&1 || ! [ -e "$r/$p" ]; then
+    git -C "$r" diff "$(mb "$r")" -- "$p"
+  else git -C "$r" diff --no-index /dev/null "$r/$p"; fi | delta --paging=never --width="$w" --line-numbers 2>/dev/null; }
+
+# Neovim in this pane, zoomed while it runs. $1 = repo, rest = nvim args.
+nv(){ local r=$1; shift; herdr pane zoom "${HERDR_PANE_ID:-}" --on >/dev/null 2>&1
+      (cd "$r" && nvim "$@"); herdr pane zoom "${HERDR_PANE_ID:-}" --off >/dev/null 2>&1; }
+# The pending notes: in the task folder, or in a repo's git dir (never in its working tree).
+notes(){ local t; t=$(git rev-parse --show-toplevel 2>/dev/null || true)
+         if [ -n "$t" ] && [ ! -e "$t/workspace.json" ]; then echo "$(git rev-parse --absolute-git-dir)/review-notes.md"
+         else echo "$PWD/review-notes.md"; fi; }
+note(){ local r=$1 p=$2 f l c; f=$(notes); clear
+        printf '\033[1m%s/%s\033[0m\n\n' "$(basename "$r")" "$p"
+        read -rp 'line (empty = the file): ' l </dev/tty
+        read -rep 'comment (empty = cancel): ' c </dev/tty
+        [ -n "$c" ] && printf -- '- `%s/%s%s` %s\n' "$(basename "$r")" "$p" "${l:+:$l}" "$c" >> "$f"; }
+# Hands the notes to the coordinator working in this folder and moves them aside (it reads them from there).
+send(){ local f pane st out; f=$(notes)
+  if [ ! -s "$f" ]; then echo 'no notes'
+  else read -r pane st < <(herdr agent list 2>/dev/null | jq -r --arg d "$(pwd -P)" '.result.agents[] | select(.cwd == $d) | "\(.pane_id) \(.agent_status)"' | head -1)
+    if [ -z "$pane" ]; then echo "no agent with cwd $PWD: the notes stay in $f"
+    elif [ "$st" = blocked ]; then echo 'the coordinator is waiting for an answer from you: reply to it and send again'
+    else out="${f%.md}-$(date +%Y%m%d-%H%M%S).md"; mv "$f" "$out"
+      if herdr agent prompt "$pane" "[review] The user's adjustments on the diff, one per line (file:line → what to change): $out" >/dev/null 2>&1
+      then echo "sent ($(grep -c '^- ' "$out")) $([ "$st" = working ] && echo '· queued behind what it is doing')"
+      else mv "$out" "$f"; echo 'could not notify the coordinator'; fi
+    fi
+  fi; sleep 2; }
+first_line(){ git -C "$1" diff -U0 "$(mb "$1")" -- "$2" 2>/dev/null | sed -n 's/^@@ -[0-9,]* +\([0-9]*\).*/\1/p' | head -1; }
+
+case "${1:-}" in
+  --diff-nvim) [ -n "${2// }" ] && nv "$2" -c "DiffviewOpen $(mb "$2") -- $3"; exit ;;
+  --edit)      [ -n "${2// }" ] && nv "$2" "+${4:-$(first_line "$2" "$3")}" "$3"; exit ;;
+  --note)   [ -n "${2// }" ] && note "$2" "$3"; exit ;;
+  --notes)  nv "$PWD" "$(notes)"; exit ;;
+  --send)   clear; send; exit ;;
+  --header) header; exit ;;
+  --list)   out=$(list); [ -n "$out" ] && echo "$out" || printf ' \t \t\033[2m  no changes yet\033[0m\n'; exit ;;
+  --diff)   [ -n "${2// }" ] && diff1 "$2" "$3"; exit ;;
+  # One refresh at a time (the next waits for this one) and only when something changed: a fzf reload every 3 s
+  # stacked up --list/--diff runs whenever git took longer than 3 s, which made it slower still.
+  --tick)   d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+            while sleep 3; do
+              { "$self" --list; echo; "$self" --header; } > "$d/new" 2>/dev/null
+              cmp -s "$d/new" "$d/last" && { curl -s "localhost:$2" >/dev/null || exit 0; continue; }
+              mv "$d/new" "$d/last"; sed '/^$/,$d' "$d/last" > "$d/list"; sed '1,/^$/d' "$d/last" > "$d/header"
+              [ -s "$d/list" ] || printf ' \t \t\033[2m  no changes yet\033[0m\n' > "$d/list"
+              curl -s -XPOST "localhost:$2" -d "reload(cat $d/list)+transform-header(cat $d/header)+refresh-preview" >/dev/null || exit 0
+            done ;;
+esac
+
+port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')   # a free port (RANDOM could collide)
+FZF_DEFAULT_OPTS= exec fzf --ansi --no-sort --track --layout=reverse --delimiter='\t' --with-nth=3.. --no-multi \
+  --listen="$port" --header-first --header="$(header)" --prompt='file › ' --pointer='▶' --info=hidden \
+  --preview="$self --diff {1} {2}" --preview-window='right,62%,border-left,<140(down,68%,border-top)' \
+  --bind "start:execute-silent($self --tick $port >/dev/null 2>&1 &)" \
+  --bind "ctrl-r:reload($self --list)+transform-header($self --header)+refresh-preview" \
+  --bind "enter:execute($self --diff-nvim {1} {2})" \
+  --bind "ctrl-e:execute($self --edit {1} {2})" \
+  --bind "ctrl-l:execute(lazygit -p {1})" \
+  --bind "ctrl-n:execute($self --note {1} {2})+transform-header($self --header)" \
+  --bind "ctrl-o:execute($self --notes)+transform-header($self --header)" \
+  --bind "ctrl-s:execute($self --send)+transform-header($self --header)" \
+  --bind "shift-down:preview-down,shift-up:preview-up,ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up" \
+  < <("$self" --list)

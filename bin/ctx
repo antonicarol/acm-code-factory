@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Context hygiene of the task sessions (coordinator + its subagents). Read-only.
+Claude Code transcripts record token usage. Cursor CLI transcripts do not: base/peak there are the logged text ÷ 4
+(a floor — tool results are not in the file) and compactions are not marked.
+Per agent: context at the first turn (base: system prompt, tools, skills, CLAUDE.md), peak, turns, compactions, and
+what the tool results put into it, by tool. Every token in the context is re-sent on every later turn, so base x turns
+is the fixed cost and the big tool outputs are what to cut (whole-file cat/sed, unfiltered logs).
+Usage: ctx [N]        the N most recent tasks (default 25)
+       ctx <task>     one task (e.g. proj-123)"""
+import collections, glob, json, os, re, sys
+
+HUB = os.environ.get('FACTORY_HUB') or sys.exit('run it as: factory ' + os.path.basename(sys.argv[0]))
+P = os.path.expanduser('~/.claude/projects/') + re.sub(r'[^A-Za-z0-9]', '-', HUB) + '--tasks-'
+arg = sys.argv[1] if len(sys.argv) > 1 else '25'
+
+
+def first_user(path):
+    with open(path, errors='replace') as f:
+        for line in f:
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if (o.get('role') or o.get('type')) != 'user':
+                continue
+            content = (o.get('message') or {}).get('content')
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return ''.join(c.get('text') or '' for c in content if isinstance(c, dict) and c.get('type') == 'text')
+            return ''
+    return ''
+
+
+def cursor_hits():
+    """(mtime, task, session dir) for Cursor coordinators of this hub. Only a session whose first prompt is the
+    factory coordinator counts: other chats mention task paths too."""
+    hits = []
+    for path in glob.glob(os.path.expanduser('~/.cursor/projects/*/agent-transcripts/*/*.jsonl')):
+        parent, sid = os.path.dirname(path), os.path.basename(os.path.dirname(path))
+        if os.path.basename(path) != sid + '.jsonl':
+            continue
+        text = first_user(path)
+        if 'you are the factory coordinator' not in text.lower():
+            continue
+        m = re.search(r'Task ([A-Za-z0-9][A-Za-z0-9._-]{0,80})', text)
+        if not m:
+            i = text.find(HUB + '/.tasks/')
+            task = re.split(r'[/\\"\s]', text[i + len(HUB) + 8:], maxsplit=1)[0] if i >= 0 else ''
+        else:
+            task = m.group(1).rstrip(',')
+        if task:
+            hits.append((os.path.getmtime(path), task, parent))
+    return hits
+
+
+# (mtime, label, main jsonl paths). Claude: one directory per task. Cursor: one session directory per task.
+entries = []
+for d in glob.glob(P + '*'):
+    if os.path.isdir(d):
+        entries.append((os.path.getmtime(d), d[len(P):], glob.glob(d + '/*.jsonl')))
+for mt, task, parent in cursor_hits():
+    sid = os.path.basename(parent)
+    entries.append((mt, task, [os.path.join(parent, sid + '.jsonl')]))
+entries.sort(key=lambda e: e[0])
+want = re.sub(r'[^a-z0-9]', '-', arg.lower())
+entries = entries[-int(arg):] if arg.isdigit() else [e for e in entries if re.sub(r'[^a-z0-9]', '-', e[1].lower()).startswith(want)]
+if not entries:
+    sys.exit(f'no task transcripts for {arg!r} ({P}* or a Cursor session of this hub)')
+
+
+def rows(path):
+    with open(path, errors='replace') as f:
+        for line in f:
+            try:
+                yield json.loads(line)
+            except ValueError:
+                pass
+
+
+def size(c):
+    if isinstance(c, str):
+        return len(c)
+    if isinstance(c, list):
+        return sum(len(b.get('text', '')) if b.get('type') == 'text' else 1600 if b.get('type') == 'image' else 0 for b in c)
+    return 0
+
+
+def key(name, inp):
+    if name == 'Read':
+        p = inp.get('file_path', '')
+        return 'Read ' + (re.sub(r'.*/(\.tasks/[^/]+/)?', '', p) if any(s in p for s in ('AGENTS.md', 'SKILL.md', 'TESTING.md', 'REVIEW.md', 'learnings/', 'guidelines/')) else '*' + os.path.splitext(p)[1])
+    if name == 'Bash':
+        c = inp.get('command', '').strip()
+        c = re.sub(r'^(\w+=\S+;?\s*)+', '', c)
+        c = re.split(r'\s*(?:&&|;)\s*', c)
+        c = next((p for p in c if p and not p.startswith('cd ')), c[0])
+        w = c.split()
+        if not w:
+            return 'Bash'
+        head = ' '.join(w[:3]) if w[0] in ('git', 'openspec', 'gh', 'yarn', 'pnpm', 'npx', 'herdr') else w[0]
+        return 'Bash ' + re.sub(r'/Users/\S+/', '', head)[:40]
+    if name in ('Agent', 'Task'):
+        return 'Agent→' + (inp.get('subagent_type') or 'general').split(':')[-1]
+    if name == 'CallDynamicTool' and inp.get('toolName') == 'Task':
+        return 'Agent→' + ((inp.get('arguments') or {}).get('subagent_type') or 'general').split(':')[-1]
+    if name == 'Skill':
+        return 'Skill ' + inp.get('skill', '')
+    if name.startswith('mcp__'):
+        return 'mcp ' + name.split('__')[-1]
+    return name
+
+
+def session(path):
+    tools, by, big, ctx, compact = {}, collections.Counter(), [], [], 0
+    assistants = chars = 0
+    for e in rows(path):
+        if e.get('isCompactSummary') or (e.get('type') == 'system' and e.get('subtype') == 'compact_boundary'):
+            compact += 1
+        m = e.get('message') or {}
+        content = m.get('content')
+        chars += size(content)
+        if (e.get('type') or e.get('role')) == 'assistant':
+            assistants += 1
+            u = m.get('usage') or {}
+            t = u.get('input_tokens', 0) + u.get('cache_read_input_tokens', 0) + u.get('cache_creation_input_tokens', 0)
+            if t:
+                ctx.append(t)
+            for b in content or []:
+                if isinstance(b, dict) and b.get('type') == 'tool_use':
+                    tools[b.get('id')] = key(b.get('name', ''), b.get('input') or {})
+        elif (e.get('type') or e.get('role')) == 'user' and isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get('type') == 'tool_result':
+                    k = tools.get(b.get('tool_use_id'), '?'); s = size(b.get('content'))
+                    by[k] += s; big.append((s, k))
+    return {'by': by, 'big': big, 'base': ctx[0] if ctx else 0,
+            'peak': max(ctx) if ctx else chars // 4, 'turns': len(ctx) if ctx else assistants, 'compact': compact}
+
+
+def agents_of(main):
+    """(path, kind) of the coordinator transcript and its subagents. Claude names them in agent-*.meta.json;
+    Cursor leaves one jsonl per subagent and the role in the prompt (/agents/<name>.md)."""
+    out, seen = [(main, 'coordinator')], {main}
+    # Claude keeps subagents beside the transcript (<id>/subagents); Cursor keeps them inside the session directory.
+    roots = [os.path.splitext(main)[0], os.path.dirname(main)]
+    for root in roots:
+        for m in glob.glob(root + '/subagents/agent-*.meta.json'):
+            try:
+                kind = (json.load(open(m)).get('agentType') or 'general').split(':')[-1]
+            except (OSError, ValueError):
+                kind = 'general'
+            path = m[:-10] + '.jsonl'
+            seen.add(path)
+            out.append((path, kind))
+    for root in roots:
+        for m in glob.glob(root + '/subagents/*.jsonl'):
+            if m in seen:
+                continue
+            head = open(m, errors='replace').read(4000)
+            mm = re.search(r'/agents/([a-z0-9-]+)\.md', head)
+            kind = mm.group(1) if mm else 'scout' if 'read-only scout' in head.lower() else 'subagent'
+            seen.add(m)
+            out.append((m, kind))
+    return out
+
+
+agg = collections.defaultdict(lambda: {'n': 0, 'base': [], 'peak': [], 'turns': [], 'compact': 0, 'by': collections.Counter(), 'big': []})
+for _, label, mains in entries:
+    for main in mains:
+        for path, kind in agents_of(main):
+            if not os.path.isfile(path):
+                continue
+            s = session(path)
+            if not s['turns']:
+                continue
+            a = agg[kind]; a['n'] += 1; a['compact'] += s['compact']
+            for f in ('base', 'peak', 'turns'):
+                a[f].append(s[f])
+            a['by'].update(s['by']); a['big'] += [(x, k, label[:40]) for x, k in s['big']]
+
+med = lambda xs: sorted(xs)[len(xs) // 2] if xs else 0
+print(f'{len(entries)} tasks: ' + ', '.join(e[1][:12] for e in entries[-8:]) + (' …' if len(entries) > 8 else '') + '\n')
+print(f"{'agent':14} {'n':>4} {'base':>7} {'peak med':>9} {'peak max':>9} {'turns':>6} {'compact':>7}  tool output (k tokens ≈ chars/4)")
+for k, a in sorted(agg.items(), key=lambda kv: -sum(kv[1]['by'].values())):
+    tot = sum(a['by'].values()) / 4000
+    print(f"{k:14} {a['n']:>4} {med(a['base']):>7} {med(a['peak']):>9} {max(a['peak'] or [0]):>9} {med(a['turns']):>6} {a['compact']:>7}  {tot:,.0f}k")
+for k, a in sorted(agg.items(), key=lambda kv: -sum(kv[1]['by'].values()))[:8]:
+    tot = sum(a['by'].values()) or 1
+    print(f"\n== {k}: top tool outputs (share · k tokens · avg per call)")
+    calls = collections.Counter(b[1] for b in a['big'])
+    for kk, v in a['by'].most_common(12):
+        print(f"  {100*v/tot:5.1f}%  {v/4000:7.1f}k  avg {v/4/max(calls[kk],1):7.0f}  ×{calls[kk]:<4} {kk}")
+print('\n== biggest single tool outputs (k tokens)')
+for sz, k, task, ag in sorted([b + (ag,) for ag, a in agg.items() for b in a['big']], reverse=True)[:20]:
+    print(f"  {sz/4000:6.1f}k  {ag:12} {k:40} {task}")

@@ -1,0 +1,18 @@
+schema: factory
+
+context: |
+  Example hub for a web product. One change = one task, possibly across repos.
+  Repos (paths relative to the hub; map, base branches and naming in AGENTS.md):
+    web    frontend app, pnpm, base `main`, branches `PROJ-<n>-slug`
+    api    backend service, npm, base `main`
+    infra  infrastructure as code, base `main`
+  Domain vocabulary: context/glossary.md. Architecture: context/architecture.md.
+  Each repo's AGENTS.md holds its rules; specs describe behaviour, not code style.
+
+rules:
+  proposal:
+    - Write prose in English; keep code identifiers, paths and endpoints as they are
+    - Use the ticket id (PROJ-<n>) in branch names when there is one
+  tasks:
+    - Never include commit, push or PR tasks (shipping is a separate step)
+    - Never include manual or by-hand QA tasks (they block the change); list manual checks in the proposal under **Decisions / Out of scope** as "Manual QA: …" — the coordinator puts them in result.md and the PR's How to test

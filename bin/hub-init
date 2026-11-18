@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# factory hub-init <dir> [store-id]: creates a new hub from templates/hub (every folder with a README of what goes in
+# it), its OpenSpec store with the factory schema, registered as <store-id> (default: the folder name), and its git.
+set -euo pipefail
+ENGINE="$(cd "$(dirname "$0")/.." && pwd)"
+dir=${1:?usage: factory hub-init <dir> [store-id]}; name=$(basename "$dir"); id=${2:-$name}
+[ -z "$(ls -A "$dir" 2>/dev/null)" ] || { echo "$dir exists and is not empty" >&2; exit 1; }
+mkdir -p "$dir"; dir=$(cd "$dir" && pwd)
+cp -R "$ENGINE/templates/hub/." "$dir/"
+cp -R "$ENGINE/openspec/schemas" "$dir/openspec/"   # ponytail: a copy per hub; link it if schemas start to drift
+for f in AGENTS.md README.md openspec/config.yaml; do sed -i '' "s/{{name}}/$name/g; s/{{store}}/$id/g" "$dir/$f"; done
+ln -s AGENTS.md "$dir/CLAUDE.md"
+mkdir -p "$dir/.openspec-store" && printf 'version: 1\nid: %s\n' "$id" > "$dir/.openspec-store/store.yaml"
+openspec store register "$dir" --id "$id" >/dev/null
+git -C "$dir" init -q -b main
+echo "hub $name ready in $dir (OpenSpec store: $id)"
+echo "next: link the repos (ln -s ../<repo> $dir/<repo>), fill AGENTS.md, workspace.json and context/, then from $dir: factory orchestrator -n orchestrator"

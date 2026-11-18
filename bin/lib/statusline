@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Status line of the kit sessions (bin/lib/kit-settings sets it): keeps the account's rate limits (5 h and 7 d windows,
+# the `rate_limits` of Claude Code's status line input) in ~/.cache/factory/usage.json for factory usage, the agentes
+# panel and sys-watch, then hands the same input to the user's own status line (~/.claude/settings.json), if any.
+in=$(cat)
+f="${XDG_CACHE_HOME:-$HOME/.cache}/factory/usage.json"; mkdir -p "${f%/*}"
+jq -ce 'select(.rate_limits) | .rate_limits + {at: (now | floor)}' <<<"$in" > "$f.$$" 2>/dev/null && mv "$f.$$" "$f" || rm -f "$f.$$"
+cmd=$(jq -r '.statusLine.command // empty' "$HOME/.claude/settings.json" 2>/dev/null)
+[ -n "$cmd" ] && printf '%s' "$in" | eval "$cmd"
+exit 0

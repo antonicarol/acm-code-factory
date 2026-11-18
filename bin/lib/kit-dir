@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Prints the --plugin-dir for a kit session of this hub. Without `agents` in workspace.json: the engine's kit.
+# With it: <hub>/.board/kit, rebuilt on every call (so engine changes still reach every hub at once): links to
+# the engine's kit, except the agents named in `agents.<name>`, which get the hub's extras:
+#   tools  → appended to the agent's `tools:` (e.g. a hub MCP server: "mcp__<server>", all its tools)
+#   skills → "load these skills first" (+ the Skill tool if the agent lacks it)
+#   notes  → the hub's instructions for that agent, at the end of its prompt
+set -euo pipefail
+. "$(dirname "$0")/hub.sh"
+# Provider other than claude (bin/lib/provider): every agent is a copy, with `model:` mapped to the provider's model and
+# an "Environment" section (hub and engine paths, model names, missing Claude Code tools), in <hub>/.board/kit-<provider>.
+cfg=$(jq -c '.agents // {}' "$HUB/workspace.json")
+prov=$("$ENGINE/bin/lib/provider")
+[ "$cfg" = "{}" ] && [ "$prov" = claude ] && { echo "$ENGINE/kit"; exit 0; }
+
+out="$HUB/.board/kit"; [ "$prov" = claude ] || out+="-$prov"
+rm -rf "$out"; mkdir -p "$out/agents"
+for f in "$ENGINE"/kit/* "$ENGINE"/kit/.[!.]*; do
+  [ -e "$f" ] && [ "$(basename "$f")" != agents ] && ln -s "$f" "$out/$(basename "$f")"
+done
+for f in "$ENGINE"/kit/agents/*.md; do
+  name=$(basename "$f" .md); a=$(jq -c --arg n "$name" '.[$n] // empty' <<<"$cfg")
+  [ -n "$a" ] || [ "$prov" != claude ] || { cp "$f" "$out/agents/$name.md"; continue; }  # a copy: Claude Code does not load a symlinked agent file
+  extra=$(jq -r '[(.tools // [])[], (if (.skills // []) | length > 0 then "Skill" else empty end)] | join(", ")' <<<"$a")
+  # Frontmatter: add the extras to the one-line `tools: [...]` (skipping ones already there); body: the hub section.
+  awk -v extra="$extra" '
+    /^tools: \[/ && !done && extra != "" {
+      sub(/\]$/, ""); line = $0; n = split(extra, x, ", ")
+      for (i = 1; i <= n; i++) if (index(line, x[i]) == 0) line = line ", " x[i]
+      print line "]"; done = 1; next }
+    { print }' "$f" > "$out/agents/$name.md"
+  [ -n "$a" ] && jq -r '
+    "\n## This hub",
+    (if (.skills // []) | length > 0 then "\nBefore you start, load these skills of the hub with the Skill tool: " + ((.skills) | map("`" + . + "`") | join(", ")) + "." else empty end),
+    (if (.tools // []) | length > 0 then "\nThe hub gives you these tools (MCP servers): " + ((.tools) | map("`" + . + "`") | join(", ")) + "." else empty end),
+    (if .notes then "\n" + .notes else empty end)' <<<"$a" >> "$out/agents/$name.md"
+  [ "$prov" = claude ] && continue
+  m=$(sed -n '2,10s/^model: *//p' "$out/agents/$name.md" | head -1)
+  [ -n "$m" ] && sed -i '' "2,10s/^model: .*/model: $("$ENGINE/bin/lib/provider" model "$m")/" "$out/agents/$name.md"
+  # The orchestrator routes; it must not inherit the coordinator's "launch the workers" instructions.
+  if [ "$name" = orchestrator ]; then
+    "$ENGINE/bin/lib/provider" config | jq -r --arg p "$prov" --arg h "$HUB" --arg e "$ENGINE" '
+      (.models // {}) as $models
+      | "\n## Environment (\($p))",
+      "\nYou run in \($p), not Claude Code. FACTORY_HUB=\($h) and FACTORY_HOME=\($e): use these paths wherever your instructions say `$FACTORY_HUB` / `$FACTORY_HOME`.",
+      "\nYou route this hub. A request becomes one task: write `.board/requests/<task>.md` and launch its coordinator with `factory task-start`. You do not implement, and you do not launch workers, reviewers or testers.",
+      "\nDo not switch to plan mode.",
+      "\nOn your first turn, list `\($h)/.board/inbox/*.md` and start each pending task the same way.",
+      "\nRead the hub (AGENTS.md, workspace.json, .board/). Where code lives is a scout: pass it the haiku id, never `haiku`, `sonnet` or `opus`. Map: " + ($models | to_entries | map("\(.key) → `\(.value)`") | join(", ")) + ". If a call is rejected, pick an accepted id of that same tier, not your own model.",
+      "\nA `factory:<name>` subagent is your subagent `<name>`. A skill `factory:<name>` is the skill `<name>` (or read its SKILL.md under the kit). Tools you lack (SendMessage, Monitor, ScheduleWakeup, AskUserQuestion, ToolSearch, Skill): ask the user in this chat. A coordinator already running gets `herdr agent prompt` (load the herdr skill first). A scout you cannot message again is launched fresh with the full question."' >> "$out/agents/$name.md"
+    continue
+  fi
+  # The coordinator launches workers and reviewers from workspace.json routing (haiku|sonnet|opus). Cursor does not
+  # know those names: give it the hub's rows already translated, and only to the coordinator.
+  rows='{}'; [ "$name" = coordinator ] && rows=$(jq -c '.routing // {}' "$HUB/workspace.json")
+  "$ENGINE/bin/lib/provider" config | jq -r --arg p "$prov" --arg h "$HUB" --arg e "$ENGINE" --argjson rows "$rows" '
+    (.models // {}) as $models
+    | "\n## Environment (\($p))",
+    "\nYou run in \($p), not Claude Code. FACTORY_HUB=\($h) and FACTORY_HOME=\($e): use these paths wherever your instructions say `$FACTORY_HUB` / `$FACTORY_HOME`.",
+    "\nDo not switch to plan mode and do not wait for a plan to be accepted. The factory plan is the one you write for this task; when its approval is auto, launch the workers.",
+    "\nDo not read or search a repo folder (no Read, Grep or Glob there), not even for a narrow question. The spec, the request, `tasks.md` and the routing row are yours. Where the code lives is a scout.",
+    "\nYou stay on the model this session was started with. A subagent gets its own: pass the mapped id, never `haiku`, `sonnet` or `opus` (this provider ignores them and the subagent runs on yours). Scout gets the haiku id, specker and ui-designer the sonnet id, worker and reviewer the routing row. Map: " + ($models | to_entries | map("\(.key) → `\(.value)`") | join(", ")) + ". If a call is rejected, it names the ids this session accepts: pick the accepted id of that same tier. Do not relaunch a low or medium role on your model.",
+    (if ($rows | length) > 0 then
+      "\nThis hub'"'"'s routing, already translated:",
+      ($rows | to_entries | map(
+        "- \(.key): worker `\($models[.value.worker] // .value.worker)`, reviewer `\($models[.value.reviewer] // .value.reviewer)`"
+        + (if .value.reviewerEffort then ", effort \(.value.reviewerEffort)" else "" end)
+        + (if .value.planApproval then ", plan \(.value.planApproval)" else "" end)) | .[])
+    else empty end),
+    "\nTools named here that you lack (SendMessage, Monitor, ScheduleWakeup, AskUserQuestion, ToolSearch, Skill, TaskStop): use your closest equivalent. A `factory:<name>` subagent is your subagent `<name>`. A skill `factory:<name>` is the skill `<name>` (or read its SKILL.md under the kit). With no way to message a finished subagent, launch a fresh one with the full context, as your instructions say for a fresh worker."' >> "$out/agents/$name.md"
+done
+echo "$out"

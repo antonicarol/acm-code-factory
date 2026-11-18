@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Jumps to a section of the focused Herdr workspace by its label, wherever it sits:
+#   1 = main Claude (orchestrator, coordinator, jared, auditor) · 2 = agentes · 3 = notion (hub) or cambios (task)
+#   4 = prs · 5 = servidores (always the hub's) · 0 = the orchestrator in the hub, from anywhere.     Bound to alt+0..5 in Herdr.
+sock="${HERDR_SOCKET_PATH:-$HOME/.config/herdr/herdr.sock}"
+focus(){ [ -n "$1" ] && "$(dirname "$0")/fold" --open "$1"; [ -n "$1" ] && printf '{"id":"goto","method":"pane.focus","params":{"pane_id":"%s"}}\n' "$1" | nc -U -w 2 "$sock" >/dev/null; }
+agents=$(herdr agent list | jq -c '.result.agents')
+if [ "$1" = 0 ]; then focus "$(jq -r --arg h "${FACTORY_HUB:-}" '.[] | select(.terminal_title_stripped == "orchestrator" and ($h == "" or .cwd == $h)) | .pane_id' <<<"$agents" | head -1)"; exit; fi
+ws=$(herdr workspace list | jq -r '.result.workspaces[] | select(.focused) | .workspace_id')
+panes=$(herdr pane list --workspace "$ws" | jq -c '.result.panes')
+label(){ jq -r --arg l "$1" '.[] | select((.label // "" | rtrimstr(" ▸")) == $l) | .pane_id' <<<"$panes" | head -1; }   # " ▸" = minimized (factory fold)
+case "$1" in
+  1) focus "$(jq -r --arg w "$ws" '.[] | select(.workspace_id == $w and .agent == "claude") | .pane_id' <<<"$agents" | head -1)" ;;
+  2) focus "$(label agentes)" ;;
+  3) p=$(label notion); focus "${p:-$(label cambios)}" ;;
+  4|5) [ "$1" = 4 ] && name=prs || name=servidores   # hub-only panels: from a task they jump to the hub's
+     hub=$(herdr workspace list | jq -r '.result.workspaces[] | select(.label == ($ENV.HUB_LABEL // "hub")) | .workspace_id' | head -1)
+     focus "$(herdr pane list --workspace "$hub" | jq -r --arg l "$name" '.result.panes[] | select((.label // "" | rtrimstr(" ▸")) == $l) | .pane_id' | head -1)" ;;
+esac

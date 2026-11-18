@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Closes a task: removes its worktrees (git refuses if one has uncommitted changes) or the links
+# to main checkouts (the branch stays checked out there), archives its OpenSpec change and
+# closes its Herdr workspace.
+# Usage: task-end <task> [--discard]   (--discard: archive without updating openspec/specs/)
+#        task-end --stale [--yes]       the open tasks whose PRs are all merged or closed: lists them and, after you
+#                                       confirm (or with --yes), closes each (all closed without merge → --discard).
+#                                       For the tasks whose coordinator never got to close them; skips their retro.
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+if [ "${1:-}" = --stale ]; then
+  . "$ENGINE/bin/lib/checkout.sh"
+  stale=()
+  for doc in "$HUB"/openspec/changes/*/proposal.md "$HUB"/briefs/*/brief.md; do
+    [ -f "$doc" ] || continue
+    task=$(basename "$(dirname "$doc")"); merged=0; closed=0; open=0
+    while IFS='|' read -r repo branch _; do
+      slug=$(repo_slug "$repo"); [ -n "$slug" ] || continue
+      case "$(gh pr list -R "$slug" --head "$branch" --state all --json state --jq '.[0].state' 2>/dev/null)" in
+        MERGED) merged=$((merged+1)) ;; CLOSED) closed=$((closed+1)) ;; OPEN) open=$((open+1)) ;;
+        *) git -C "$HUB/$repo" ls-remote --exit-code -q --heads origin "$branch" >/dev/null 2>&1 && open=$((open+1)) ;;   # pushed, no PR yet
+      esac
+    done < <(task_repos "$doc")
+    [ "$open" -eq 0 ] && [ $((merged + closed)) -gt 0 ] || continue
+    if [ "$merged" -gt 0 ]; then echo "$task  · $merged PR(s) merged$([ "$closed" -eq 0 ] || echo ", $closed closed")"; stale+=("$task")
+    else echo "$task  · PR closed without merge → --discard"; stale+=("$task --discard"); fi
+  done
+  [ ${#stale[@]} -gt 0 ] || { echo "no task with all its PRs merged or closed"; exit 0; }
+  if [ "${2:-}" != --yes ]; then
+    [ -t 0 ] || exit 0
+    read -rp "Close these ${#stale[@]}? [y/N] " ok; [ "$ok" = y ] || exit 0
+  fi
+  for t in "${stale[@]}"; do "$0" $t || echo "✗ ${t%% *}: could not close (see the error above)"; done   # $t unquoted: "<task> --discard"
+  exit 0
+fi
+task=${1:?task}
+skip=""; [ "${2:-}" = --discard ] && skip="--skip-specs"
+[ -d "$HUB/openspec/changes/$task/specs" ] || skip="--skip-specs"   # no deltas: nothing to merge into openspec/specs/
+dir="$HUB/.tasks/$task"
+[ -x "$HUB/bin/task-servers" ] && { "$HUB/bin/task-servers" "$task" stop >/dev/null 2>&1 || true; }   # its worktree fronts, if the hub has any
+rm -f "$HUB/.board/servers/$task".*
+for p in "$dir"/*; do
+  if [ -L "$p" ]; then rm "$p"
+  elif [ -e "$p/.git" ]; then git -C "$p" worktree remove "$p"   # no --force: uncommitted work stops here
+  fi
+done
+# Every repo is gone by now (worktree remove stops the script on uncommitted work): what is left is debris
+# (review notes, the session's .claude, test logs), and rmdir alone left those folders in .tasks/ forever.
+rm -rf "$dir"
+if [ -d "$HUB/openspec/changes/$task" ]; then
+  (cd "$HUB" && openspec archive "$task" -y $skip >/dev/null)
+elif [ -d "$HUB/briefs/$task" ]; then   # lite task: keep brief + result as history
+  mkdir -p "$HUB/briefs/archive" && mv "$HUB/briefs/$task" "$HUB/briefs/archive/$(date +%F)-$task"
+fi
+if [ "${HERDR_ENV:-}" = 1 ]; then
+  . "$ENGINE/bin/lib/checkout.sh"
+  ws=$(task_ws "$task")   # the id task-start saved, only if it still carries the task's label
+  if [ -n "$ws" ]; then herdr workspace close "$ws" >/dev/null 2>&1 || true
+  else echo "note: Herdr workspace of $task not found: close it by hand"; fi
+fi
+echo "closed $task (branches are kept; change or brief archived)"

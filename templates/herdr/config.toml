@@ -1,0 +1,102 @@
+# The factory's part of ~/.config/herdr/config.toml: copy it into yours (docs/10-instalar.md).
+# Every key calls `factory <command>`, so it runs on the default hub (~/.config/factory/hub) unless the pane is inside another hub.
+
+[ui]
+# Visible lines around every pane, so the side panels read as columns.
+pane_borders = "always"
+show_agent_labels_on_pane_borders = true
+# Agents panel: grouped by workspace (hub first, then one per task).
+agent_panel_sort = "spaces"
+status_indicators = "symbols"
+
+[ui.sidebar.agents.rows_by_agent]
+# Line 1: state + workspace; line 2: the session name (-n): "orchestrator" or the task id;
+# line 3: its running subagents ("└ 2×scout · worker"), reported by the kit's hook.
+claude = [["state_icon", "workspace"], ["terminal_title_stripped"], ["$subagents"]]
+
+# See what an agent changed: lazygit (+ delta) on the focused pane's repo; asks which worktree in a task folder.
+[[keys.command]]
+key = "prefix+d"
+type = "popup"
+command = "~/.local/bin/factory changes"
+width = "90%"
+height = "90%"
+
+# Jump to this hub's orchestrator from anywhere.
+[[keys.command]]
+key = "prefix+a"
+type = "shell"
+command = "~/.local/bin/factory goto 0"
+
+# Task board: orchestrator → coordinators → subagents, live (q closes).
+[[keys.command]]
+key = "prefix+t"
+type = "pane"
+command = "~/.local/bin/factory board"
+
+# Tasks of the hub's tracker (only with "notion" in workspace.json); enter sends one to the orchestrator.
+[[keys.command]]
+key = "prefix+i"
+type = "pane"
+command = "~/.local/bin/factory inbox"
+
+# Your open PRs; enter opens one in the browser.
+[[keys.command]]
+key = "prefix+r"
+type = "pane"
+command = "~/.local/bin/factory prs"
+
+# Jump straight to a section of the current workspace (no prefix); alt+h shows every shortcut.
+[[keys.command]]
+key = "alt+0"
+type = "shell"
+command = "~/.local/bin/factory goto 0"
+[[keys.command]]
+key = "alt+1"
+type = "shell"
+command = "~/.local/bin/factory goto 1"
+[[keys.command]]
+key = "alt+2"
+type = "shell"
+command = "~/.local/bin/factory goto 2"
+[[keys.command]]
+key = "alt+3"
+type = "shell"
+command = "~/.local/bin/factory goto 3"
+[[keys.command]]
+key = "alt+4"
+type = "shell"
+command = "~/.local/bin/factory goto 4"
+[[keys.command]]
+key = "alt+5"
+type = "shell"
+command = "~/.local/bin/factory goto 5"
+
+# Minimize the focused pane to its title line, or restore it.
+[[keys.command]]
+key = "alt+m"
+type = "shell"
+command = "~/.local/bin/factory fold"
+
+[[keys.command]]
+key = "alt+h"
+type = "popup"
+command = "~/.local/bin/factory keys"
+width = 92
+height = 26
+
+# Neovim on the repo you are in (asks which one in a task with several).
+[[keys.command]]
+key = "alt+e"
+type = "popup"
+command = "~/.local/bin/factory edit"
+width = "96%"
+height = "96%"
+
+# Switch this window to another hub (with `factory hubs` as the window command; else opens that hub's own window).
+[[keys.command]]
+key = "alt+f"
+type = "popup"
+command = "~/.local/bin/factory hubs --switch"
+width = 50
+height = 12

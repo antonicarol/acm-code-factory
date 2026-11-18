@@ -1,0 +1,88 @@
+name: factory
+version: 1
+description: Factory hub - proposal → specs → tasks (no design.md; one change = one task, possibly across repos)
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Why, what, which repos (branch/base) and the shared contract
+    template: proposal.md
+    instruction: >
+      Create the proposal for ONE task. Keep it short (one page). Sections:
+
+      - **Why**: 1-2 sentences, the problem or the ticket's goal. When there is a Notion ticket, add a line `**Ticket**: <ET-n> <notion page url>`.
+
+      - **What Changes**: bullets of observable changes. Mark breaking changes
+      with **BREAKING**.
+
+      - **Repos**: one row per repo the task touches: path relative to the hub,
+      worktree branch and base branch (take naming and base from the hub's
+      AGENTS.md table; e.g. api `PROJ-123-slug` from `main`,
+      web `feat/proj-123-slug` from `main`), and what changes there.
+
+      - **Risk**: two lines, `- Risk: tiny|low|medium|high — <one-line reason>` and
+      `- Surfaces: ui, security` (either, both, or `none`). The rules are in the
+      specker's "Risk and surfaces"; the coordinator picks models and review
+      lenses from them.
+
+      - **Contract**: when more than one repo is involved, the exact shared
+      interface (endpoints with method and path, request/response fields and
+      types, events). Workers build both sides in parallel from it, so it must
+      be unambiguous. Omit for single-repo tasks.
+
+      - **Capabilities**: New / Modified capabilities (kebab-case). Each one
+      becomes `specs/<name>/spec.md`. Check `openspec/specs/` for existing
+      names first. List only behaviour changes, not implementation details;
+      leave empty for pure refactors or tooling (the change then has no specs/ folder, skips `openspec validate` and archives without touching `openspec/specs/`).
+
+      - **Decisions / Out of scope**: choices made and what is explicitly not
+      done.
+    requires: []
+  - id: specs
+    generates: specs/**/*.md
+    description: Requirement deltas per capability (what the system must do)
+    template: spec.md
+    instruction: >
+      One spec file per capability listed in the proposal, at
+      `specs/<capability>/spec.md`. If the proposal lists no capabilities,
+      create nothing.
+
+
+      Delta sections (## headers): **ADDED Requirements**, **MODIFIED
+      Requirements** (copy the ENTIRE existing requirement block from
+      `openspec/specs/<capability>/spec.md` and edit it; header text must
+      match), **REMOVED Requirements** (with **Reason** and **Migration**),
+      **RENAMED Requirements** (FROM:/TO:).
+
+
+      Format: `### Requirement: <name>` + one sentence with SHALL/MUST, then at
+      least one `#### Scenario: <name>` (exactly 4 hashes) with `- **WHEN**`
+      / `- **THEN**` bullets. Each scenario should be testable.
+    requires:
+      - proposal
+  - id: tasks
+    generates: tasks.md
+    description: Checklist grouped by repo, tracked during apply
+    template: tasks.md
+    instruction: >
+      Break the work into a checklist. **Follow the template exactly**: apply
+      parses `- [ ] X.Y` checkboxes.
+
+
+      - One `## N. <repo path>` group per repo in the proposal's Repos table
+      (each group is handed to one worker in that repo's worktree), plus a
+      final `## N. Verification` group.
+
+      - Each task is small and verifiable; name the file or module when known.
+
+      - Order within a repo by dependency. Groups for different repos must be
+      doable in parallel from the Contract; if one really depends on another,
+      say so in the group heading.
+    requires:
+      - specs
+apply:
+  requires:
+    - tasks
+  tracks: tasks.md
+  instruction: |
+    Read proposal, specs and tasks. Hand each repo group to one worker in that repo's worktree.
+    Mark tasks `- [x]` as they are done and verified. Pause on blockers.

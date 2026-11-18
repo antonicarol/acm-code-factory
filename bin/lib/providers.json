@@ -1,0 +1,9 @@
+{
+  "claude": { "kind": "claude", "exe": "claude" },
+  "cursor": {
+    "kind": "cursor",
+    "exe": "cursor-agent",
+    "flags": ["--trust", "--force", "--approve-mcps"],
+    "models": { "opus": "grok-4.7-high", "sonnet": "grok-4.7-medium", "haiku": "grok-4.7-low", "fable": "grok-4.7-high" }
+  }
+}

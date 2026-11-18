@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Factory running</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Geist:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Served by `factory dash`. An architecture diagram after stack-diagram (graph paper, tiles, labelled groups,
+ * orthogonal arrows with mono labels) in Vesper, the factory's theme (docs/flujo.html). Flow runs left to right:
+ * orchestrator → one row per coordinator → its subagents in launch order; a row that does not fit the width
+ * continues on another line, reached by an elbow from the coordinator. Geometry (stack-diagram's): node box
+ * 132×100, tile 60, 160 between node centres, 140 between lines, groups 90 past the outer centres. */
+:root {
+  color-scheme: dark;
+  --paper: #101010; --rule: #191919; --rule-2: #2a2a2a; --panel: #1b1b1b;
+  --ink: #ffffff; --muted: #a0a0a0; --dim: #5f5f5f;
+  --peach: #ffc799; --peach-soft: rgb(255 199 153 / .4); --peach-tint: rgb(255 199 153 / .045);
+  --mint: #99ffe4; --mint-soft: rgb(153 255 228 / .32); --mint-tint: rgb(153 255 228 / .035);
+  --red: #ff8080; --veil: rgb(16 16 16 / .8);
+  --display: "Instrument Serif", Georgia, serif;
+  --sans: "Geist", system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { overflow-x: clip; }
+body { background: var(--paper); color: var(--ink); font-family: var(--sans); }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+
+.bar { position: sticky; top: 0; z-index: 5; background: rgb(16 16 16 / .9); backdrop-filter: blur(8px); border-bottom: 1px solid var(--rule-2); }
+.bar-in { padding: 14px 24px; display: flex; align-items: center; gap: 16px; }
+.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.brand h1 { font-family: var(--display); font-weight: 400; font-size: 26px; line-height: 1; white-space: nowrap; }
+.brand .hub { font-family: var(--mono); font-size: 11px; letter-spacing: .04em; color: var(--mint); white-space: nowrap; }
+.stats { margin-left: auto; display: flex; gap: 14px; font-family: var(--mono); font-size: 11px; letter-spacing: .04em; color: var(--muted); }
+.stats b { color: var(--ink); font-weight: 500; }
+.stats .clock { color: var(--dim); }
+.tools { display: flex; gap: 6px; }
+.tools button { font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em; color: var(--muted);
+  border: 1px solid var(--rule-2); border-radius: 6px; padding: 5px 9px; background: var(--panel); }
+.tools button:hover { color: var(--ink); border-color: var(--dim); }
+@media (max-width: 640px) { .stats .clock, .tools { display: none; } .bar-in { padding: 12px 16px; } }
+
+.page { padding: 24px 24px 48px; }
+@media (max-width: 640px) { .page { padding: 16px; } }
+.scroller { overflow-x: auto; border: 1px solid var(--rule-2); border-radius: 10px; }
+.canvas { position: relative; background: var(--paper);
+  background-image: linear-gradient(var(--rule) 1px, transparent 1px), linear-gradient(90deg, var(--rule) 1px, transparent 1px);
+  background-size: 24px 24px; background-position: -1px -1px; }
+
+.group { position:absolute; border-radius: 12px; border: 1.5px solid var(--rule-2); background: rgb(255 255 255 / .012); }
+.group.hub { border-color: var(--mint-soft); background: var(--mint-tint); }
+.group.working { border-color: var(--peach-soft); background: var(--peach-tint); }
+.group.blocked { border-color: var(--red); }
+.g-label { position:absolute; top:12px; left:12px; right: 12px; font-size: 12px; font-weight: 600; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-label .slug { font-weight: 400; color: var(--dim); margin-left: 6px; }
+.group.hub > .g-label { color: var(--mint); }
+.group.working > .g-label { color: var(--peach); }
+
+.node { position:absolute; width:132px; text-align:center; }
+button.node { cursor: pointer; }
+.tile { position: relative; width:60px; height:60px; margin:0 auto; border-radius: 12px; display:grid; place-items:center;
+  background: var(--panel); border: 1px solid var(--rule-2); font-family: var(--mono); font-size: 15px; font-weight: 500;
+  color: var(--muted); transition: border-color .15s cubic-bezier(.16,1,.3,1); }
+.node:hover .tile { border-color: var(--ink); }
+.tile::after { content:""; position:absolute; top:6px; right:6px; width:6px; height:6px; border-radius:50%; background: var(--dim); }
+.working .tile { border-color: var(--peach); color: var(--peach); box-shadow: 0 0 0 4px rgb(255 199 153 / .08), 0 0 18px rgb(255 199 153 / .15); }
+.working .tile::after { background: var(--peach); animation: pulse 1.2s ease-in-out infinite; }
+.done .tile { color: var(--dim); }
+.done .tile::after { background: var(--mint); opacity: .7; }
+.blocked .tile { border-color: var(--red); color: var(--red); }
+.blocked .tile::after { background: var(--red); }
+.node.orch .tile { border-color: var(--mint-soft); color: var(--mint); }
+.node .name { font-family: var(--sans); font-weight:600; font-size:13px; margin-top: 8px; }
+.done .name { color: var(--muted); }
+.node .name .n { font-family: var(--mono); font-size: 10px; font-weight: 400; color: var(--dim); margin-right: 5px; }
+.node .role { font-family: var(--mono); font-size:9.5px; letter-spacing:.04em; color: var(--muted); margin-top:2px; line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.node .role .d { color: var(--dim); }
+.node.working .role .d { color: var(--peach); }
+.node .name span, .node .role span { background: var(--veil); padding: 0 3px; border-radius: 3px; }
+@keyframes pulse { 50% { opacity: .25; } }
+/* a phase: folded, one node with a dashed tile (number of runs); open, a dashed box around its runs */
+.stage .tile { border-style: dashed; font-size: 17px; }
+.phase { position: absolute; border: 1px dashed var(--dim); border-radius: 10px; pointer-events: none; }
+.phase.working { border-color: var(--peach-soft); }
+.p-label { position: absolute; top: 6px; left: 10px; pointer-events: auto; font-family: var(--mono); font-size: 10px;
+  letter-spacing: .04em; color: var(--muted); background: var(--paper); padding: 0 4px; }
+.phase.working .p-label { color: var(--peach); }
+.p-label span { color: var(--dim); margin-left: 6px; }
+.p-label:hover span { color: var(--ink); }
+.more { position: absolute; font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em; color: var(--muted);
+  border: 1px dashed var(--rule-2); border-radius: 6px; padding: 6px 10px; background: var(--paper); white-space: nowrap; }
+.more:hover { color: var(--ink); border-color: var(--dim); }
+
+svg.edges { position:absolute; inset:0; pointer-events:none; }
+.e { stroke: var(--peach); stroke-width:1.6; fill:none; }
+.n { stroke: var(--dim); stroke-width:1.4; fill:none; }
+.dash { stroke-dasharray: 4 5; }
+.live { stroke-dasharray: 6 6; animation: flow 1s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -12; } }
+.el { font-family: var(--mono); font-size:10.5px; fill: var(--muted); paint-order: stroke; stroke: var(--paper);
+  stroke-width:4px; stroke-linejoin:round; letter-spacing:.04em; }
+.el.a { fill: var(--peach); }
+
+.legend { display:flex; gap: 20px; align-items:center; margin-top: 16px; flex-wrap:wrap;
+  font-family: var(--mono); font-size:10px; letter-spacing:.04em; color: var(--muted); }
+.legend .sw { display:inline-block; width:30px; vertical-align:middle; margin-right:6px; border-top:1.6px dashed var(--peach); }
+.legend .sw.n { border-color: var(--dim); }
+.legend .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+</style>
+</head>
+<body>
+<header class="bar"><div class="bar-in">
+  <div class="brand"><h1>The factory</h1><span class="hub" id="hub">…</span></div>
+  <div class="stats" id="stats">connecting…</div>
+  <div class="tools"><button id="open-all">expand</button><button id="close-all">collapse</button></div>
+</div></header>
+<div class="page">
+  <div class="scroller"><div class="canvas" id="canvas" style="width:900px;height:300px"></div></div>
+  <div class="legend">
+    <span><i class="sw"></i>running</span><span><i class="sw n"></i>finished</span>
+    <span><i class="dot" style="background:var(--peach)"></i>working</span>
+    <span><i class="dot" style="background:var(--red)"></i>blocked</span>
+    <span><i class="dot" style="background:var(--mint)"></i>done</span>
+    <span><i class="dot" style="background:var(--dim)"></i>idle</span>
+    <span>click a coordinator or a phase: collapse / expand</span>
+  </div>
+</div>
+<script>
+const M = 24, PAD = 90, PITCH = 160, LINE = 160, GGAP = 24, TOP = 40;
+const MONO = { orchestrator:"OR", coordinator:"CO", scout:"SC", worker:"WK", reviewer:"RV", tester:"TS",
+  "ui-tester":"UT", "ui-designer":"UD", specker:"SP", auditor:"AU", "task-creator":"TC", jared:"JA" };
+const mono = t => MONO[t] || (t.includes("-") ? t.split("-").map(w => w[0]).join("").slice(0, 2) : t.slice(0, 2)).toUpperCase();
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+const dur = s => s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m${s % 60}s` : `${Math.floor(s / 3600)}h${Math.floor(s / 60) % 60}m`;
+const ph = () => `animation-delay:-${Date.now() % 1200}ms`;   // re-render every 2s without restarting animations
+const st = s => s === "working" ? "working" : s === "blocked" ? "blocked" : "idle";
+const STATE = { working: "working", blocked: "blocked", idle: "idle", done: "finished", unknown: "no Herdr" };
+
+// fold state: what you toggled wins; otherwise a coordinator's flow is open while it works
+let folds = {};
+try { folds = JSON.parse(localStorage.getItem("dash-folds") || "{}"); } catch {}
+const saveFolds = () => { try { localStorage.setItem("dash-folds", JSON.stringify(folds)); } catch {} };
+const isOpen = t => t.task in folds ? folds[t.task] : t.status === "working";
+// a phase is open while something in it runs; `expand`/`collapse` set the default for the rest ("*stages")
+const stageOpen = (key, live) => key in folds ? folds[key] : live || folds["*stages"] === true;
+
+// A coordinator's runs in phases: spec (what runs before the first build), then build and review rounds. A round is
+// a block of fixes (worker, scout…) followed by the block of checks it triggered (reviewer, tester, ui-tester…).
+// ponytail: guessed from agent types, not from the task's own state; read .board/tasks/<task>.json if it records rounds
+const SPEC = new Set(["specker", "scout", "ui-designer", "auditor", "task-creator"]);
+const CHECK = new Set(["reviewer", "tester", "ui-tester", "ui-designer"]);
+function stages(subs) {
+  const out = [], spec = [];
+  let i = 0;
+  while (i < subs.length && SPEC.has(subs[i].type)) spec.push(subs[i++]);
+  if (spec.length) out.push({ label: "spec", runs: spec });
+  for (let r = 0; i < subs.length; r++) {
+    const runs = [];
+    while (i < subs.length && !CHECK.has(subs[i].type)) runs.push(subs[i++]);
+    while (i < subs.length && CHECK.has(subs[i].type)) runs.push(subs[i++]);
+    out.push({ label: r ? `round ${r}` : "build", runs });
+  }
+  return out;
+}
+
+function node(cx, top, cls, name, role, title, letters, task, attr = "") {
+  const tag = task || attr ? "button" : "div";
+  return `<${tag} class="node ${cls}" style="left:${cx - 66}px;top:${top}px" title="${esc(title)}"${task ? ` data-task="${esc(task)}"` : ""}${attr}>
+    <div class="tile" style="${ph()}">${esc(letters)}</div>
+    <div class="name"><span>${name}</span></div><div class="role"><span>${role}</span></div></${tag}>`;
+}
+
+function render(d) {
+  const now = d.now, orch = d.sessions.find(s => s.orchestrator);
+  const tasks = d.sessions.filter(s => !s.orchestrator);
+  const W = Math.max(document.querySelector(".scroller").clientWidth, 900);
+  const groups = [], nodes = [], idle = [], live = [], labels = [];
+  const edge = (path, on) => (on ? live : idle).push(`<path class="${on ? "e live" : "n dash"}" style="${ph()}" d="${path}" marker-end="url(#ar)"/>`);
+
+  // the orchestrator: top left; its own subagents (rare) flow down under it
+  const ox = M + PAD, oTop = TOP + 72, os = orch ? [...orch.subs].sort((a, b) => a.start - b.start) : [];
+  const busX = M + 2 * PAD + 36, GX = busX + 40, GW = W - GX - M;
+  if (orch) {
+    groups.push(`<div class="group hub" style="left:${M}px;top:${TOP}px;width:${2 * PAD}px;height:${72 + os.length * LINE + 150}px"><div class="g-label">${esc(d.hub)}</div></div>`);
+    nodes.push(node(ox, oTop, `orch ${st(orch.status)}`, "orchestrator", esc(STATE[orch.status] || orch.status), orch.pane || "", "OR"));
+    os.forEach((s, i) => {
+      const top = oTop + (i + 1) * LINE, run = s.end == null;
+      nodes.push(subNode(ox, top, s, i, now));
+      edge(`M${ox} ${top - LINE + 106} V${top - 6}`, run);
+    });
+    if (tasks.length) labels.push(`<text class="el a" x="${(ox + 36 + busX) / 2}" y="${oTop + 22}" text-anchor="middle">tasks</text>`);
+  }
+
+  // one row per coordinator: coordinator on the left of its group, its phases to the right in launch order; a folded
+  // phase is one node, an open one shows its runs inside a dashed box
+  let y = TOP;
+  const boxes = [];
+  for (const t of tasks) {
+    const s = st(t.status), open = isOpen(t), coCx = GX + PAD, coTop = y + 72, x0 = coCx + PITCH + 10;
+    const per = Math.max(1, Math.floor((GX + GW - PAD - x0) / PITCH) + 1);
+    const subs = [...t.subs].sort((a, b) => a.start - b.start);
+    // place: one slot per node; an open phase gets lines of its own, so its box never covers a neighbour
+    const items = [];
+    let line = 0, col = 0, n = 0;
+    const put = item => { if (col === per) { line++; col = 0; } items.push({ ...item, line, col }); col++; };
+    if (open) stages(subs).forEach((g, k) => {
+      const key = `${t.task}#${k}`, live = g.runs.some(x => x.end == null);
+      if (g.runs.length === 1 || !stageOpen(key, live)) {
+        if (g.runs.length === 1) put({ run: g.runs[0], i: n }); else put({ stage: g, key, live, i: n });
+        n += g.runs.length; return;
+      }
+      if (col) { line++; col = 0; }
+      const first = items.length;
+      g.runs.forEach(x => put({ run: x, i: n++ }));
+      boxes.push({ g, key, live, its: items.slice(first) });
+      col = per;   // whatever follows starts a new line
+    });
+    const lines = items.length ? line + 1 : 1, gh = 72 + (lines - 1) * LINE + 150;
+    const id = (t.task.match(/^[A-Za-z]+-\d+/) || [""])[0];
+    const slug = (id ? t.task.slice(id.length).replace(/^[-· ]+/, "") : t.task) || t.title;
+    const run = subs.filter(x => x.end == null).length;
+    groups.push(`<div class="group ${s}" style="left:${GX}px;top:${y}px;width:${GW}px;height:${gh}px"><div class="g-label">${esc(id || "task")}<span class="slug">${esc(slug)}</span></div></div>`);
+    nodes.push(node(coCx, coTop, s, "coordinator",
+      `${esc(STATE[t.status] || t.status)} · ${run ? `${run} running · ` : ""}${subs.length} runs`, `${t.title} · ${t.task}`, "CO", t.task));
+    if (orch) edge(`M${ox + 36} ${oTop + 30} H${busX} V${coTop + 30} H${coCx - 36}`, t.status === "working");
+    for (const it of items) {
+      it.cx = x0 + it.col * PITCH; it.top = coTop + it.line * LINE;
+      const { cx, top, col, line } = it, mid = top + 30, on = it.run ? it.run.end == null : it.live;
+      nodes.push(it.run ? subNode(cx, top, it.run, it.i, now) : stageNode(cx, top, it, now));
+      edge(col ? `M${cx - PITCH + 36} ${mid} H${cx - 36}`                              // chained after the one before
+        : line ? `M${coCx} ${coTop + 106} V${mid} H${cx - 36}`                          // a new line: elbow from the coordinator
+        : `M${coCx + 36} ${mid} H${cx - 36}`, on);
+    }
+    for (const b of boxes.splice(0)) {   // the open phases' boxes, around their nodes (a phase may span lines)
+      const xs = b.its.map(i => i.cx), l = Math.min(...xs) - 74, r = Math.max(...xs) + 74;
+      const t0 = b.its[0].top - 36, t1 = b.its[b.its.length - 1].top + 116;
+      groups.push(`<div class="phase${b.live ? " working" : ""}" style="left:${l}px;top:${t0}px;width:${r - l}px;height:${t1 - t0}px">
+        <button class="p-label" data-stage="${esc(b.key)}">${esc(b.g.label)} · ${b.g.runs.length} runs <span>collapse</span></button></div>`);
+    }
+    if (!open && subs.length) {
+      nodes.push(`<button class="more" data-task="${esc(t.task)}" style="left:${x0 - 66}px;top:${coTop + 17}px">view ${subs.length} runs</button>`);
+      edge(`M${coCx + 36} ${coTop + 30} H${x0 - 72}`, false);
+    }
+    y += gh + GGAP;
+  }
+
+  const H = Math.max(y - GGAP, orch ? TOP + 222 + os.length * LINE : 0, 200) + TOP;
+  const c = document.getElementById("canvas");
+  c.style.width = W + "px"; c.style.height = H + "px";
+  c.innerHTML = groups.join("") +
+    `<svg class="edges" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-hidden="true">
+      <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="context-stroke"/></marker></defs>
+      ${idle.join("")}${live.join("")}${labels.join("")}</svg>` +   // live last: shared trunks take the accent
+    nodes.join("") + (d.sessions.length ? "" : `<div class="more" style="left:${M}px;top:${TOP}px">Nothing running in this hub.</div>`);
+
+  const working = d.sessions.reduce((a, s) => a + s.subs.filter(x => x.end == null).length, 0);
+  document.getElementById("hub").textContent = d.hub;
+  document.getElementById("stats").innerHTML = `<span><b>${tasks.length}</b> tasks</span><span><b>${working}</b> subagents</span>` +
+    `<span class="clock">${new Date(now * 1000).toLocaleTimeString("en-GB")}</span>`;
+}
+function stageNode(cx, top, it, now) {
+  const runs = it.stage.runs, end = Math.max(...runs.map(x => x.end ?? now)), seen = {};
+  runs.forEach(x => seen[x.type] = (seen[x.type] || 0) + 1);
+  const kinds = Object.entries(seen).map(([k, c]) => mono(k) + (c > 1 ? `×${c}` : "")).join(" ");
+  const nums = `${String(it.i + 1).padStart(2, "0")}–${String(it.i + runs.length).padStart(2, "0")}`;
+  return node(cx, top, `stage ${it.live ? "working" : "done"}`, `<span class="n">${nums}</span>${esc(it.stage.label)}`,
+    `<span class="d">${dur(end - runs[0].start)}</span> · ${kinds}`,
+    runs.map(x => `${x.type}: ${x.desc}`).join("\n"), String(runs.length), "", ` data-stage="${esc(it.key)}"`);
+}
+function subNode(cx, top, s, i, now) {
+  const run = s.end == null, d = (run ? now : s.end) - s.start;
+  return node(cx, top, run ? "working" : "done", `<span class="n">${String(i + 1).padStart(2, "0")}</span>${esc(s.type)}`,
+    `<span class="d">${dur(d)}</span>${s.desc ? ` · ${esc(s.desc)}` : ""}`, `${s.type}: ${s.desc}`, mono(s.type));
+}
+
+let last;
+async function tick() {
+  try { render(last = await (await fetch("/state.json", { cache: "no-store" })).json()); }
+  catch { document.getElementById("stats").textContent = "no connection to factory dash"; }
+}
+document.getElementById("canvas").addEventListener("click", e => {
+  const p = e.target.closest("[data-stage]");
+  if (p) { const k = p.dataset.stage, live = p.classList.contains("working") || !!p.closest(".phase.working");
+    folds[k] = !stageOpen(k, live); saveFolds(); return render(last); }
+  const h = e.target.closest("[data-task]"); if (!h || !last) return;
+  const t = last.sessions.find(s => s.task === h.dataset.task); if (!t) return;
+  folds[t.task] = !isOpen(t); saveFolds(); render(last);
+});
+const all = v => () => {   // every coordinator and every phase; a running phase stays open on `collapse`
+  if (!last) return;
+  for (const k of Object.keys(folds)) if (k.includes("#")) delete folds[k];
+  for (const t of last.sessions) if (!t.orchestrator) folds[t.task] = v;
+  folds["*stages"] = v; saveFolds(); render(last);
+};
+document.getElementById("open-all").onclick = all(true);
+document.getElementById("close-all").onclick = all(false);
+addEventListener("resize", () => last && render(last));
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>

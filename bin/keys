@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Cheat sheet (Herdr popup: alt+h). Any key closes it.
+cat <<'TXT'
+
+  SECTIONS (no prefix)                      HERDR (prefix ctrl+b)
+  alt+1  main session (orch. / coord.)      w        pick workspace
+  alt+2  agents                             h j k l  move between panes
+  alt+3  notion (hub) · changes (task)      c        new tab · v / -  split
+  alt+4  prs                                t        board in a pane
+  alt+5  servers (start / stop / view)
+  alt+m  minimize / restore the focused pane (or ctrl+b m)
+  alt+0  the hub's orchestrator             i / r    my tasks / my PRs in a pane
+  alt+e  Neovim in the repo (find file)     d        lazygit (popup)  · alt+d in a pane
+  alt+h  this help · alt+f  switch hub
+                                            a        orchestrator · ?  herdr help
+
+  IN THE LISTS                              IN CLAUDE
+  enter / double click  main action         ctrl+v   paste image
+    notion → sends the task to the orch.    shift+tab  permission mode
+    prs    → opens the PR                   esc esc  edit previous message
+    changes→ diff in Neovim · ctrl-e edit · ctrl-l lazygit
+  ctrl-r refresh · ctrl-o open in Notion
+  ? details (prs) · shift-↑/↓ scroll diff (changes) · esc quit
+
+  NEOVIM (LazyVim, space = leader; space alone shows them all)
+  space space file · space / text · space e tree · space , buffers
+  gd definition · gr references · K info · space c a action · space c f format
+  space g D task diff vs base · space g d local diff · ]h [h hunk · q close diff
+  space g g lazygit · :q quit
+
+TXT
+read -rsn1

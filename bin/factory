@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# factory <command> [args]: runs an engine command (bin/<command>) on the hub you are in (bin/lib/hub.sh).
+# factory <agent> [claude args]: starts that kit agent (factory orchestrator → factory claude-kit orchestrator).
+# factory <hub command> [args]: a command of the hub itself (<hub>/bin/<command>), for what only that project needs.
+set -euo pipefail
+bin=$(dirname "$(realpath "$0")")   # ~/.local/bin/factory is a link
+cmd=${1:-}; [ $# -gt 0 ] && shift
+if [ "$cmd" = hub-init ]; then exec "$bin/hub-init" "$@"; fi   # a new hub has no hub yet
+[ -n "$cmd" ] && [ "$cmd" != factory ] && [ "$cmd" != lib ] || cmd=""
+[ -n "$cmd" ] && [ -f "$bin/../kit/agents/$cmd.md" ] && [ ! -f "$bin/$cmd" ] && { set -- "$cmd" "$@"; cmd=claude-kit; }
+. "$bin/lib/hub.sh"
+[ -n "$cmd" ] && [ -f "$ENGINE/bin/$cmd" ] && [ -x "$ENGINE/bin/$cmd" ] && exec "$ENGINE/bin/$cmd" "$@"
+[ -n "$cmd" ] && [ -f "$HUB/bin/$cmd" ] && [ -x "$HUB/bin/$cmd" ] && exec "$HUB/bin/$cmd" "$@"
+echo "usage: factory <command|agent> [args]"
+echo "commands: $(cd "$ENGINE/bin" && ls | grep -vx -e lib -e factory | tr '\n' ' ')"
+[ -d "$HUB/bin" ] && echo "hub ($(basename "$HUB")): $(cd "$HUB/bin" && ls | grep -vx lib | tr '\n' ' ')"
+echo "agents:   $(cd "$ENGINE/kit/agents" && ls | sed 's/\.md$//' | tr '\n' ' ')"
+exit 1

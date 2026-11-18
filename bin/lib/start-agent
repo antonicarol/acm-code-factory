@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Starts claude (or the provider's CLI: factory provider) as a named Herdr agent in a fresh pane (used by task-start, jared, audit-start).
+#   start-agent <pane> <agent name> <workspace label, for messages> <claude args...>
+# Exit 0 = running · 2 = waiting on a startup dialog in that workspace (its first prompt is queued) · 1 = failed.
+pane=$1 name=$2 where=$3; shift 3
+# claude's arguments → the current provider's (factory provider): its kind for Herdr and its arguments.
+. "$(dirname "$0")/hub.sh"
+cmd=(); while IFS= read -r -d '' a; do cmd+=("$a"); done < <("$ENGINE/bin/lib/agent-args" "$@")
+kind=$("$ENGINE/bin/lib/provider" config | jq -r '.kind'); set -- "${cmd[@]:1}"
+# A fresh pane's shell needs a moment before agent start accepts it: wait for its prompt.
+herdr pane wait-output "$pane" --regex '[%$#>❯] ?$' --source visible --timeout 20000 >/dev/null 2>&1 || true
+# `agent start` waits for the agent to sit idle; with an initial prompt it goes straight to work, so start can
+# time out (and a retry then sees agent_pane_busy) although Claude is running: check the pane.
+running(){ herdr agent list 2>/dev/null | jq -e --arg p "$pane" --arg k "$kind" '.result.agents[] | select(.pane_id == $p and .agent == $k)' >/dev/null; }
+for try in 1 2 3; do
+  out=$(herdr agent start "$name" --kind "$kind" --pane "$pane" -- "$@" 2>&1) && exit 0
+  running && { herdr agent rename "$pane" "$name" >/dev/null 2>&1 || true; exit 0; }
+  grep -q agent_not_ready <<<"$out" && { echo "$name is waiting for an answer in Herdr workspace '$where' (startup dialog); its first prompt is queued"; exit 2; }
+  [ "$try" = 3 ] && { echo "agent start failed in pane $pane: $out" >&2; exit 1; }
+  sleep 2
+done

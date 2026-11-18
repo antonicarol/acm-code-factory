@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Starts an auditor (kit agent factory:auditor) on one repo in its own Herdr workspace "audit · <repo>",
+# with its agent flow in a pane on the right. The report lands in audits/<repo>/<date>-<types>/.
+# Usage: audit-start <repo> [security|quality|review|all] [scope]
+# Profile and budget come from workspace.json (claude.auditProfile, claude.auditBudget).
+# One run can override the profile: AUDIT_PROFILE=deep factory audit-start ...
+#   e.g. audit-start api security apps/billing-service
+#   review = code review of a target (required): paths, a PR (#123) or a branch, e.g.
+#   audit-start web review "#412"   ·   audit-start api review apps/billing-service/src
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+repo=${1:?repo (relative to the hub)}; types=${2:-all}; scope=${3:-}
+[ "${HERDR_ENV:-}" = 1 ] || { echo "run inside Herdr" >&2; exit 1; }
+[ -d "$HUB/$repo/.git" ] || [ -f "$HUB/$repo/.git" ] || { echo "$repo is not a git repo in the hub" >&2; exit 1; }
+case "$types" in security|quality|review|all) ;; *) echo "types: security | quality | review | all" >&2; exit 1;; esac
+[ "$types" != review ] || [ -n "$scope" ] || { echo "review needs a target: paths, a PR (#123) or a branch" >&2; exit 1; }
+kind=audit; [ "$types" = review ] && kind=review
+profile=${AUDIT_PROFILE:-$(jq -r '.claude.auditProfile // "quick"' "$HUB/workspace.json")}
+case "$profile" in quick|standard|deep) ;; *) echo "AUDIT_PROFILE: quick | standard | deep" >&2; exit 1;; esac
+budget=$(jq -r '.claude.auditBudget // 12' "$HUB/workspace.json")
+name=$(basename "$repo"); out="$HUB/audits/$name/$(date +%F)-$types"; n=2
+while [ -e "$out" ]; do out="$HUB/audits/$name/$(date +%F)-$types-$n"; n=$((n+1)); done
+mkdir -p "$out"
+src="$(cd "$HUB/$repo" && pwd -P)"
+brief="Audit $repo. Types: $types. Scope: ${scope:-whole repo}. Output: $out. Profile: $profile. Agent budget: $budget."
+
+pane=$(herdr workspace create --cwd "$HUB/$repo" --label "$kind · $name" --no-focus | jq -r '.result.root_pane.pane_id')
+right=$(herdr pane split "$pane" --direction right --ratio 0.6 --cwd "$HUB" --no-focus | jq -r '.result.pane.pane_id')
+herdr pane rename "$right" agentes >/dev/null 2>&1 || true
+herdr pane run "$right" "$ENGINE/bin/panel agentes --pane $pane" >/dev/null
+agent="$kind-$(tr 'A-Z' 'a-z' <<<"$name" | cut -c1-25)"
+rc=0; "$ENGINE/bin/lib/start-agent" "$pane" "$agent" "$kind · $name" \
+  --plugin-dir "$("$ENGINE/bin/lib/kit-dir")" --agent factory:auditor --add-dir "$HUB" --add-dir "$src" -n "$kind · $name" \
+  --settings "$("$ENGINE/bin/lib/kit-settings")" "$brief" || rc=$?
+[ "$rc" = 0 ] && echo "auditor started in Herdr workspace '$kind · $name' → $out"
+[ "$rc" != 1 ]

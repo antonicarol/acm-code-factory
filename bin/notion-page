@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# A Notion ticket on disk, so agents read it once and only the parts they need. A ticket page is ~4-8k tokens
+# (body plus ancestor/relation/formula metadata); fetched with the MCP it stays in the caller's context for the rest
+# of its session (the orchestrator's runs all day), and the specker used to fetch it again.
+# Fetches through a tiny `claude -p` (Haiku, Notion MCP), takes the raw fetch result (no model rewrites it), keeps
+# the useful properties and the body, and writes .board/notion/<ET-n>.md. Prints only a short card: path,
+# title, status, priority, SPs, short description and the body's headings.
+# Usage: notion-page <ET-n | n | notion url> [--refresh]   (a file younger than 30 min is reused)
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+ref=${1:?usage: notion-page <ET-n | n | notion url> [--refresh]}; refresh=${2:-}
+dir="$HUB/.board/notion"; mkdir -p "$dir"
+tasks=$(jq -r '.notion.tasks' "$HUB/workspace.json"); idp=$(jq -r '.notion.idProperty' "$HUB/workspace.json")
+
+if [[ $ref =~ ^([Ee][Tt]-)?([0-9]+)$ ]]; then
+  key="ET-${BASH_REMATCH[2]}"
+  url=$(jq -r --argjson n "${BASH_REMATCH[2]}" '.[] | select(.id == $n) | .url' "$HUB/.board/notion-tasks.json" 2>/dev/null | head -1)
+  ask=${url:+"Call notion-fetch with id \"$url\"."}
+  sql=$(jq -nc --arg t "$tasks" --arg q "SELECT url FROM \"$tasks\" WHERE \"$idp\" = ${BASH_REMATCH[2]}" '{data: {mode: "sql", data_source_urls: [$t], query: $q}}')
+  ask=${ask:-"Call notion-query-data-sources with exactly this argument: $sql. Then call notion-fetch with the url of the row it returns."}
+else
+  key=$(grep -oE '[0-9a-f]{32}' <<<"${ref//-/}" | tail -1); [ -n "$key" ] || { echo "not a ticket or Notion url: $ref" >&2; exit 2; }
+  ask="Call notion-fetch with id \"$ref\"."
+fi
+f="$dir/$key.md"
+
+if [ "$refresh" != --refresh ] && [ -s "$f" ] && [ -z "$(find "$f" -mmin +30)" ]; then :; else
+  raw=$(mktemp); trap 'rm -f "$raw"' EXIT
+  (cd "$HUB/.board" && claude -p --model haiku --settings "$("$ENGINE/bin/lib/kit-settings")" \
+    --allowedTools 'mcp__notion__notion-fetch,mcp__notion__notion-query-data-sources' \
+    --output-format stream-json --verbose "$ask Then reply only OK." </dev/null 2>/dev/null > "$raw") || true
+  # The last notion-fetch result, verbatim from the stream.
+  python3 -I - "$f" "$raw" <<'EOF' || { echo "notion-page: could not fetch $ref" >&2; exit 1; }
+import json, re, sys, html
+fetch, page = set(), None
+for line in open(sys.argv[2], errors='replace'):
+    try: e = json.loads(line)
+    except ValueError: continue
+    for b in (e.get('message') or {}).get('content') or []:
+        if not isinstance(b, dict): continue
+        if b.get('type') == 'tool_use' and b.get('name', '').endswith('notion-fetch'): fetch.add(b['id'])
+        if b.get('type') == 'tool_result' and b.get('tool_use_id') in fetch:
+            c = b.get('content'); page = c if isinstance(c, str) else ''.join(x.get('text', '') for x in c or [] if isinstance(x, dict))
+if not page: sys.exit(1)
+try: d = json.loads(page); t, url = d.get('text', page), d.get('url', '')
+except ValueError: t, url = page, ''
+m = re.search(r'<properties>\s*(.*?)\s*</properties>', t, re.S)
+props = json.loads(m.group(1)) if m else {}
+body = re.search(r'<content>\s*(.*?)\s*</content>', t, re.S)
+body = body.group(1) if body else t
+body = re.sub(r'<br\s*/?>', '\n', body)
+body = re.sub(r'</?code>', '`', body)
+body = html.unescape(body)
+keep = ['userDefined:Id', 'Name', 'Status', 'Priority', 'SPs', 'Short Description']
+# Plain values only: relations, people, formulas and rollups are urls the caller can't use.
+lines = [f'- {k.split(":")[-1]}: {props[k]}' for k in keep if props.get(k) not in (None, '', [])]
+lines.append(f"- url: {props.get('url') or url.split('?')[0]}")
+open(sys.argv[1], 'w').write(f"# {props.get('Name', '').replace(chr(92), '')}\n\n" + '\n'.join(lines) + '\n\n' + body.strip() + '\n')
+EOF
+fi
+
+# The card: enough to route a task; the body is in the file.
+awk -v f="$f" 'NR == 1 { print f; print; next } /^- (Id|Status|Priority|SPs|Short Description):/ { print; next }
+  /^#+ / { h = h (h ? " · " : "") substr($0, index($0, " ") + 1) } END { print "- sections: " h; print "- size: ~" int(c / 4) " tokens" }
+  { c += length($0) + 1 }' "$f"

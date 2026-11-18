@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Opens Neovim (file finder first) on the repo of where you are: the current repo, one of the task's repos
+# (asks which when there are several) or, from the hub, any repo of the workspace. Herdr: alt+e.
+. "$(dirname "$0")/lib/hub.sh"
+# repos (one per line) on stdin → the chosen one; no question when there is only one. bash 3.2: no mapfile.
+pick(){ local list; list=$(cat); [ -n "$list" ] || return 1
+        [ "$(wc -l <<<"$list")" -eq 1 ] && { echo "$list"; return; }
+        FZF_DEFAULT_OPTS= fzf --height=40% --layout=reverse --prompt='repo › ' --delimiter=/ --with-nth=-1 <<<"$list"; }
+repos_in(){ for d in "$1"/*/; do [ -e "$d.git" ] && echo "${d%/}"; done; }   # a task folder: one folder per repo
+hub_repos(){ jq -r '.repos // {} | keys[]' "$HUB/workspace.json" | while read -r k; do [ -e "$HUB/$k/.git" ] && echo "$HUB/$k"; done; }
+if root=$(git rev-parse --show-toplevel 2>/dev/null) && [ "$root" != "$HUB" ]; then repo=$root
+else
+  list=""; [ "$(pwd -P)" = "$(cd "$HUB" && pwd -P)" ] || list=$(repos_in "$PWD")
+  [ -n "$list" ] || list=$(hub_repos)   # task folder, else every repo of the hub (workspace.json repos)
+  repo=$(pick <<<"$list") || exit 0
+fi
+cd "$repo" && exec nvim -c 'FzfLua files'

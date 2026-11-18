@@ -1,0 +1,5 @@
+{
+  "name": "factory",
+  "version": "0.33.0",
+  "description": "Code factory: orchestrator (hub router), coordinator (one per task) and its team (specker, scout, ui-designer, worker, reviewer, tester, ui-tester), plus jared and task-creator (task tracker) and auditor."
+}

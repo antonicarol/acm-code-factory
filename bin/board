@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Live tree of what is running: orchestrator, one coordinator per task, and their subagents.
+# Claude: the kit hook's .board/ logs. Cursor does not run those hooks; its subagents are read from the
+# CLI transcript (~/.cursor/projects/*/agent-transcripts/<session>/subagents). Refreshes every 2s; q quits.
+# Herdr: prefix+t opens it as a pane on the right. `board --once` prints one frame.
+# `board --pane <pane_id>`: only that session, every subagent in launch order (the task panel uses it).
+. "$(dirname "$0")/lib/hub.sh"
+board="${FACTORY_BOARD_DIR:-$HUB/.board}"
+DONE_SHOWN=5   # finished subagents listed per session
+ONLY=""; [ "${1:-}" = --pane ] && { ONLY=$2; DONE_SHOWN=200; shift 2; }
+c(){ printf '\033[%sm' "$1"; }; R=$(c 0); DIM=$(c 2); B=$(c 1)
+icon(){ case $1 in working) echo "$(c 33)◐$R";; blocked) echo "$(c 31)⚠$R";; done) echo "$(c 32)✓$R";; idle) echo "$(c 2)○$R";; *) echo "$(c 2)·$R";; esac; }
+dur(){ local s=$1; ((s<60)) && echo "${s}s" || echo "$((s/60))m$((s%60))s"; }
+# id|type|desc|start|end for one Cursor session. A subagent is running until its transcript ends with turn_ended.
+cursor_subs(){
+  local sid=$1 dir
+  dir=$(printf '%s\n' "$HOME"/.cursor/projects/*/agent-transcripts/"$sid" 2>/dev/null | head -1)
+  [ -d "$dir/subagents" ] || return 0
+  python3 - "$dir" "$sid" <<'PY'
+import json, os, re, sys
+d, sid = sys.argv[1], sys.argv[2]
+tasks = []
+def add(inp):
+    if not isinstance(inp, dict):
+        return
+    tasks.append(((inp.get("prompt") or "")[:160],
+                  (inp.get("subagent_type") or "agent").split(":")[-1],
+                  (inp.get("description") or "").replace("|", "/").replace("\n", " ")))
+parent = os.path.join(d, sid + ".jsonl")
+if os.path.isfile(parent):
+    for line in open(parent):
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        content = (o.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if not isinstance(c, dict) or c.get("type") != "tool_use":
+                continue
+            name, inp = c.get("name"), c.get("input") or {}
+            if name == "Task":
+                add(inp)
+            elif name == "CallDynamicTool" and inp.get("toolName") == "Task":
+                add(inp.get("arguments") or {})
+used = set()
+rows = []
+for fn in os.listdir(os.path.join(d, "subagents")):
+    if not fn.endswith(".jsonl"):
+        continue
+    path = os.path.join(d, "subagents", fn)
+    text, ended = "", False
+    for line in open(path):
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        if o.get("type") == "turn_ended":
+            ended = True
+        if text or o.get("role") != "user":
+            continue
+        content = (o.get("message") or {}).get("content")
+        if isinstance(content, list):
+            text = "".join(c.get("text") or "" for c in content if isinstance(c, dict) and c.get("type") == "text")
+    typ, desc = "agent", ""
+    for i, (prompt, t, desc_i) in enumerate(tasks):
+        if i not in used and prompt and prompt in text:
+            used.add(i); typ, desc = t, desc_i; break
+    if typ == "agent":
+        m = re.search(r"/agents/([a-z0-9-]+)\.md", text)
+        if m:
+            typ = m.group(1)
+    st = os.stat(path)
+    start = int(getattr(st, "st_birthtime", st.st_ctime))
+    end = int(st.st_mtime) if ended else ""
+    rows.append((start, "%s|%s|%s|%s|%s" % (fn, typ, desc, start, end)))
+for _, line in sorted(rows):
+    print(line)
+PY
+}
+
+frame(){
+  local now cols agents; now=$(date +%s)
+  cols=$(stty size </dev/tty 2>/dev/null | awk '{print $2}'); cols=${cols:-$(tput cols 2>/dev/null || echo 60)}   # frame runs in $(…): tput would see a pipe
+  # pane|status|title, from Herdr: the title is the session name (-n): "orchestrator", "PROJ-123 · coordinator"
+  agents=$( [ "${HERDR_ENV:-}" = 1 ] && herdr agent list 2>/dev/null | jq -r --arg only "$ONLY" '.result.agents[] | select($only == "" or .pane_id == $only) | "\(.pane_id)|\(.agent_status)|\(.terminal_title_stripped // "")|\(.agent // "")|\(.agent_session.value // "")"' )
+  local title=TAREAS; [ -n "$ONLY" ] && title="AGENTES DE LA TAREA"
+  printf '%s %s%s %*s\n\n' "$B" "$title" "$R" $((cols-${#title}-2)) "$(date +%H:%M:%S)"
+  # one row per session: sortkey|order|log|label|state. Live Herdr agents first (even with no subagents yet);
+  # without Herdr, the .board logs of the last 12h.
+  {
+    if [ -n "$agents" ]; then
+      n=0; while IFS='|' read -r pane state label kind sid; do
+        n=$((n+1)); log=$(grep -l -x "pane=$pane" "$board"/*.meta 2>/dev/null | xargs ls -t 2>/dev/null | head -1); log=${log%.meta}
+        case "$label" in orchestrator) label="hub · orchestrator"; key=0 ;; *[Cc]oordinator*|jared) key=1 ;; *) key=2 ;; esac
+        echo "$key|$n|$log|$label|$state|$kind|$sid"
+      done <<<"$agents"
+    else
+      for meta in "$board"/*.meta; do
+        [ -e "$meta" ] && [ $((now - $(stat -f %m "${meta%.meta}"))) -lt 43200 ] || continue
+        echo "2|$(stat -f %m "$meta")|${meta%.meta}|$(basename "$(sed -n 's/^cwd=//p' "$meta")")|unknown||"
+      done
+    fi
+  } | sort -t'|' -k1,1n -k2,2n | while IFS='|' read -r _ _ log label state kind sid; do
+    printf ' %s %s%s%s\n' "$(icon "$state")" "$B" "$label" "$R"
+    # Two passes over the same lines (running, then the latest finished). A pipe would let the first awk eat it.
+    lines=$( [ -s "$log" ] && cat "$log" || { [ "$kind" = cursor ] && [ -n "$sid" ] && cursor_subs "$sid"; } )
+    [ -n "$lines" ] && { printf '%s\n' "$lines" | awk -F'|' '$5==""'
+      printf '%s\n' "$lines" | awk -F'|' '$5!=""' | tail -n $DONE_SHOWN | { [ -n "$ONLY" ] && cat || tail -r; }; } |
+    while IFS='|' read -r _ type desc start end; do
+      if [ -z "$end" ]; then st=working; d=$((now-start)); else st=done; d=$((end-start)); fi
+      line=$(printf '%-8s %s' "$type" "$desc")
+      printf '   %s %s %s%s%s\n' "$(icon $st)" "${line:0:$((cols-16))}" "$DIM" "$(dur $d)" "$R"
+    done
+    echo
+  done
+}
+
+# one-line key reminder under the tree (full list: alt+h)
+keys(){ printf '\033[2m alt+1 principal · alt+2 agents · alt+3 %s · alt+4 prs · alt+5 servers · alt+0 hub · alt+e nvim · alt+h shortcuts\033[0m\n' "$([ -n "$ONLY" ] && echo changes || echo notion)"; }
+[ "${1:-}" = --once ] && { frame; exit; }
+tput civis; trap 'tput cnorm' EXIT
+while :; do
+  out=$(frame); printf '\033[H\033[2J%s\n%s' "$out" "$(keys)"
+  read -rsn1 -t 2 k && [ "$k" = q ] && break
+done

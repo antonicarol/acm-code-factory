@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "PreToolUse":    [{ "matcher": "Agent|Task", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/subagents.sh" }] }],
+    "PostToolUse":   [{ "matcher": "Agent|Task", "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/subagents.sh" }] }],
+    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/subagents.sh" }] }],
+    "SubagentStop":  [{ "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/subagents.sh" }, { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/reap-tests.sh" }] }]
+  }
+}

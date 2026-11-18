@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Watches the PRs of the active tasks (branches from each proposal's Repos table) and tells the
+# orchestrator when a task gets its PRs opened or merged, so Notion moves to Review / To test without
+# anyone asking. On merge the task's coordinator closes the task (factory task-end); the orchestrator only when it is gone. On open PRs it also watches review comments: when new unresolved threads (or a new bot
+# review) show up and stay the same for two polls, it tells the task's coordinator to run its review loop.
+# And merge conflicts: when an open PR is CONFLICTING it tells that coordinator once to resolve them,
+# and again only if the conflicts come back after the PR was mergeable. Same for a red CI: once per failure,
+# again only after the checks went green.
+# Polls with `gh` only (no tokens); Claude is prompted once per change.
+# Started by `factory claude-kit orchestrator` (one instance). `pr-watch --once` checks once and exits.
+. "$(dirname "$0")/lib/hub.sh"; . "$ENGINE/bin/lib/checkout.sh"
+state="$HUB/.board/pr-watch"; mkdir -p "$state"
+INTERVAL=${PR_WATCH_INTERVAL:-120}
+
+if [ "${1:-}" != --once ]; then
+  # already running (and that pid is really pr-watch: after a reboot it can belong to anything)
+  [ -f "$state/pid" ] && ps -p "$(cat "$state/pid")" -o command= 2>/dev/null | grep -q pr-watch && exit 0
+  echo $$ > "$state/pid"; trap 'rm -f "$state/pid"' EXIT
+fi
+
+# Prompts the orchestrator (or, with a 2nd arg "<ticket>", that task's coordinator, found by its title); fails (so we retry next round)
+# if it is missing or waiting on the user.
+notion=$(jq -r 'if .notion then "1" else "" end' "$HUB/workspace.json")   # no tracker → no status moves to ask for
+notify(){
+  local pane st cwd sid who=${2:-}
+  if [ -z "$who" ]; then read -r pane st < <(orch_pane)
+  else read -r pane st cwd sid < <(herdr agent list 2>/dev/null | jq -r --arg who "$who" --arg t "$HUB/.tasks/" '.result.agents[] |
+    select(((.terminal_title_stripped // "") as $t | ($t | ascii_downcase | startswith($who + " ·")) and ($t | test("coordinator")))
+      or ((.cwd | startswith($t)) and (.cwd | ltrimstr($t) | ascii_downcase) as $d | ($d == $who or ($d | startswith($who + "-")))))   # no title (other provider): its task folder
+    | "\(.pane_id) \(.agent_status) \(.cwd) \(.agent_session.value // "-")"' | head -1)
+  fi
+  [ -n "$pane" ] && [ "$st" != blocked ] || return 1
+  [ -n "$who" ] && [ "$st" != working ] && compact "$pane" "$cwd" "$sid"
+  herdr agent prompt "$pane" "$1" >/dev/null 2>&1
+}
+
+# The coordinator's agent id of a task: its ticket label, lowercased (proj-123-foo → proj-123).
+agent_of(){ task_label "$1" | tr 'A-Z' 'a-z'; }
+# Tells the task's coordinator; if it is not available, the orchestrator instead (fallback message, for the user).
+# Succeeds if either took it; $via says which one (coord|orch).
+to_coord(){
+  via=coord; notify "$2" "$(agent_of "$1")" && return
+  via=orch; notify "$3"
+}
+
+# Everything after a coordinator ships (review comments, red CI, merges) runs on the strong model carrying the whole
+# build in its context (100-190k, re-read every turn: about half of its cost). Before waking an idle one whose context
+# is over 100k, compact it: its state is on disk (result.md, tasks.md, rounds/) and a fresh worker reads the round file.
+# Claude records token usage; Cursor does not, so its threshold is the logged conversation (chars/4) and the command
+# is /summarize (/compact is an alias there, and it takes no keep-list: the next prompt is the review itself).
+compact(){
+  local f="$HOME/.claude/projects/$(sed 's/[^A-Za-z0-9]/-/g' <<<"$2")/$3.jsonl" ctx cmd dir
+  if [ -f "$f" ]; then
+    ctx=$(tail -n 300 "$f" | grep '"usage"' | tail -1 | jq '.message.usage | .input_tokens + .cache_read_input_tokens + .cache_creation_input_tokens' 2>/dev/null)
+    cmd="/compact Keep: the task, its repos, branches and PR URLs, the routing row, decisions the user took and anything still open. Drop file contents, diffs, command output and subagent reports: result.md, tasks.md and rounds/ on disk have them."
+  else
+    dir=$("$ENGINE/bin/lib/cursor-session" "$3"); f="$dir/$3.jsonl"
+    [ -f "$f" ] || return 0
+    ctx=$(( $(wc -c < "$f") / 4 ))
+    cmd="/summarize"
+  fi
+  [ "${ctx:-0}" -gt 100000 ] || return 0
+  herdr agent prompt "$1" "$cmd" >/dev/null 2>&1 || return 0
+  sleep 5; herdr agent wait "$1" --until idle --until done --timeout 300000 >/dev/null 2>&1 || true
+}
+
+# One query per open PR: its review threads, reviews and mergeability (reviews and conflicts read it).
+pr_info(){
+  gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){
+    mergeable
+    reviewThreads(first:100){nodes{id isResolved comments(last:1){nodes{body}}}}
+    reviews(last:30){nodes{id author{login}}}}}}' -F o="${1%/*}" -F r="${1#*/}" -F n="$2" 2>/dev/null
+}
+
+# Review comments on an open PR: fingerprint = unresolved threads whose last comment is not a factory reply
+# (the coordinator signs its replies with <!-- factory -->; matching by login would hide the user's own comments
+# on their own PR, since the coordinator posts as the same GitHub user) + the latest review of each bot.
+# Notify the coordinator when it changed and held still for one poll (the bot is done).
+bots=$(jq -r '(.reviewLoop.bots // []) | join(",")' "$HUB/workspace.json")
+reviews(){
+  local task=$1 info=$2 num=$3 url=$4 fp
+  local f="$state/$task.pr$num"
+  fp=$(jq -r --arg bots "$bots" '.data.repository.pullRequest |
+         ([.reviewThreads.nodes[] | select(.isResolved | not) | select(.comments.nodes[0].body // "" | contains("<!-- factory -->") | not) | .id] +
+          [.reviews.nodes | map(select(.author.login as $a | $bots | split(",") | index($a))) | group_by(.author.login)[] | last.id])
+         | sort | join(" ")' <<<"$info" 2>/dev/null)
+  [ -n "$fp" ] || { : > "$f.seen"; return; }
+  [ "$fp" = "$(cat "$f.seen" 2>/dev/null)" ] || { echo "$fp" > "$f.seen"; return; }   # still changing: wait a poll
+  [ "$fp" = "$(cat "$f.notified" 2>/dev/null)" ] && return
+  to_coord "$task" "[pr-watch] There are pending review comments on $url. Load the skill factory:review-loop (or read $ENGINE/kit/skills/review-loop/SKILL.md) and handle them." \
+    "[pr-watch] $task: pending review comments on $url, but its coordinator is not available. Tell the user." && echo "$fp" > "$f.notified"
+}
+
+# Open PR that conflicts with its base. GitHub reports UNKNOWN while it computes mergeability: skip
+# that poll. Notify once per conflict spell; a later MERGEABLE clears it so a new conflict notifies again.
+conflicts(){
+  local task=$1 info=$2 num=$3 url=$4 m
+  local f="$state/$task.pr$num.conflict"
+  m=$(jq -r '.data.repository.pullRequest.mergeable // empty' <<<"$info" 2>/dev/null)
+  case "$m" in
+    CONFLICTING) ;;
+    MERGEABLE) rm -f "$f"; return ;;
+    *) return ;;
+  esac
+  [ -e "$f" ] && return
+  to_coord "$task" "[pr-watch] $url has conflicts with its base. Load the skill factory:resolve-conflicts (or read $ENGINE/kit/skills/resolve-conflicts/SKILL.md) and resolve them." \
+    "[pr-watch] $task: $url has conflicts with its base, but its coordinator is not available. Tell the user." && touch "$f"
+}
+
+# Open PR whose checks finished with a failure. Waits while any check is still running. Notify once per red
+# spell; all checks passing clears it so a later failure notifies again. No checks at all: nothing to do.
+ci(){
+  local task=$1 slug=$2 num=$3 url=$4 out failed
+  local f="$state/$task.pr$num.ci"
+  out=$(gh pr checks "$num" -R "$slug" --json bucket,name 2>/dev/null)   # exits non-zero on fail/pending, output still valid
+  jq -e 'length > 0' <<<"$out" >/dev/null 2>&1 || return
+  jq -e 'any(.bucket == "pending")' <<<"$out" >/dev/null && return
+  failed=$(jq -r '[.[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | join(", ")' <<<"$out")
+  [ -n "$failed" ] || { rm -f "$f"; return; }
+  [ -e "$f" ] && return
+  to_coord "$task" "[pr-watch] $url has red CI ($failed). Look at the failure (gh pr checks $num -R $slug, gh run view --log-failed) and, if it is the code, fix it with a fix round (step 16 of your prompt) and push; if not (flaky, infra, secrets), tell the user." \
+    "[pr-watch] $task: $url has red CI ($failed), but its coordinator is not available. Tell the user." || return
+  # the coordinator's answer stays in its own pane: tell the orchestrator too, where the user is looking
+  [ "$via" = orch ] || notify "[pr-watch] $task: $url has red CI ($failed). I have already passed it to its coordinator. Tell the user in one line."
+  touch "$f"
+}
+
+check(){
+  local doc=$1 task urls="" n=0 open=0 merged=0 repo branch base slug pr info merged_prs=() open_urls=""
+  task=$(basename "$(dirname "$doc")")
+  while IFS='|' read -r repo branch base; do
+    [ -d "$HUB/$repo" ] || continue
+    slug=$(repo_slug "$repo")
+    [ -n "$slug" ] || continue
+    n=$((n+1))
+    pr=$(gh pr list -R "$slug" --head "$branch" --state all --json state,url,number --jq '.[0] | "\(.state) \(.url) \(.number)"' 2>/dev/null)
+    # A repo listed but never pushed (no PR, no branch on origin: "no changes here") does not count.
+    # ponytail: if one repo merges before the other was ever pushed, the task closes early; rare (ship pushes all repos together)
+    [ -z "$pr" ] && ! git -C "$HUB/$repo" ls-remote --exit-code -q --heads origin "$branch" >/dev/null 2>&1 && { n=$((n-1)); continue; }
+    case "$pr" in OPEN*) open=$((open+1)); info=$(pr_info "$slug" "${pr##* }")
+      reviews "$task" "$info" "${pr##* }" "$(cut -d' ' -f2 <<<"$pr")"; conflicts "$task" "$info" "${pr##* }" "$(cut -d' ' -f2 <<<"$pr")"; ci "$task" "$slug" "${pr##* }" "$(cut -d' ' -f2 <<<"$pr")";; MERGED*) merged=$((merged+1)); merged_prs+=("${pr##* } $(cut -d' ' -f2 <<<"$pr")");; esac
+    case "$pr" in OPEN*) open_urls+=" $(cut -d' ' -f2 <<<"$pr")";; esac
+    pr=${pr% *}; [ -n "$pr" ] && urls+=" ${pr#* }"
+  done < <(task_repos "$doc")
+  [ "$n" -gt 0 ] || return
+  # Some PRs merged, others still open: tell the coordinator once per merged PR (the task stays open).
+  if [ "$merged" -gt 0 ] && [ "$merged" -lt "$n" ]; then
+    for m in "${merged_prs[@]}"; do
+      [ -e "$state/$task.pr${m%% *}.merged" ] && continue
+      notify "[pr-watch] ${m#* } is merged. Still open:${open_urls:- none (no PR yet in some repo)}. Do not close the task until all are merged; if the remaining one depends on this one (deploy, contract), tell the user." "$(agent_of "$task")" &&
+        touch "$state/$task.pr${m%% *}.merged"
+    done
+  fi
+  if [ "$merged" -eq "$n" ] && [ ! -e "$state/$task.merged" ]; then
+    to_coord "$task" "[pr-watch] All your PRs are merged ($urls ). Close the task: step 17 of your prompt." \
+      "[pr-watch] $task: all its PRs are merged ($urls ) and its coordinator is not available.${notion:+ Move its Notion task to To test and} close it with factory task-end $task. Reply in one line." &&
+      { [ "$via" = orch ] || [ -z "$notion" ] || notify "[pr-watch] $task: all its PRs are merged ($urls ). Move its Notion task to To test; its coordinator closes it. Reply in one line."; } &&
+      touch "$state/$task.merged" "$state/$task.review"
+  elif [ $((open + merged)) -eq "$n" ] && [ ! -e "$state/$task.review" ]; then
+    if [ -n "$notion" ]; then notify "[pr-watch] $task: PR open in all its repos ($urls ). Move its Notion task to Review. Reply in one line."; fi && touch "$state/$task.review"
+  fi
+}
+
+while :; do
+  # active tasks: OpenSpec proposals and lite briefs (both carry the "## Repos" table)
+  for doc in "$HUB"/openspec/changes/*/proposal.md "$HUB"/briefs/*/brief.md; do
+    [ -f "$doc" ] && check "$doc"
+  done
+  [ "${1:-}" = --once ] && exit 0
+  sleep "$INTERVAL"
+done

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Prints the --settings file for a kit session of this hub: bin/lib/kit-settings.json plus FACTORY_HUB and
+# FACTORY_HOME (the hooks and agents find hub and engine with them), the engine as an extra directory and the status
+# line that records the account's usage (bin/lib/statusline, which then runs the user's own).
+. "$(dirname "$0")/hub.sh"
+mkdir -p "$HUB/.board"
+jq --arg h "$HUB" --arg e "$ENGINE" '.env.FACTORY_HUB = $h | .env.FACTORY_HOME = $e | .statusLine = {type: "command", command: ($e + "/bin/lib/statusline")} | .permissions.additionalDirectories += [$e]' \
+  "$ENGINE/bin/lib/kit-settings.json" > "$HUB/.board/kit-settings.json"
+echo "$HUB/.board/kit-settings.json"

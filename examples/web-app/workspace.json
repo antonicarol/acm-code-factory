@@ -1,0 +1,39 @@
+{
+  "approvals": { "spec": "ask", "plan": "auto" },
+  "openspec": "auto",
+  "ship": "ask",
+  "uiTests": "on",
+  "uiEnv": "local",
+  "worktrees": "on-demand",
+  "reviewLoop": { "fixes": "ask", "resolveThreads": "bot-only", "bots": [], "rounds": 2 },
+  "repos": {
+    "web":   { "roles": ["ui"],  "base": "main", "setup": "cp \"$SRC/.env\" . && pnpm install --frozen-lockfile" },
+    "api":   { "roles": ["api"], "base": "main", "setup": "cp \"$SRC/.env\" . && npm ci" },
+    "infra": { "roles": ["infra"], "base": "main" }
+  },
+  "servers": [
+    { "name": "web", "repo": "web", "cmd": "pnpm dev", "ready": "http://localhost:3000/" },
+    { "name": "api", "repo": "api", "cmd": "npm run dev", "ready": "http://localhost:4000/health" }
+  ],
+  "panels": { "hub": ["agentes", "tareas", "prs", "servidores"] },
+  "routing": {
+    "tiny":   { "worker": "haiku",  "reviewer": "sonnet", "reviewerEffort": "medium" },
+    "low":    { "worker": "sonnet", "reviewer": "sonnet", "reviewerEffort": "medium" },
+    "medium": { "worker": "sonnet", "reviewer": "sonnet", "reviewerEffort": "high" },
+    "high":   { "worker": "opus",   "reviewer": "opus",   "reviewerEffort": "high", "planApproval": "ask" }
+  },
+  "gate": {
+    "protected": ["*.spec.ts", "*.test.ts", "*eslint.config.*", "*tsconfig*.json"],
+    "attention": {
+      "migration": ["*/migrations/*"],
+      "dependencies": ["package.json", "*/package.json"],
+      "ci/deploy": [".github/*", "*Dockerfile*", "*docker-compose*", "*.tf"],
+      "env": ["*.env.example"]
+    },
+    "repos": {
+      "web": { "base": "main", "checks": ["pnpm exec tsc --noEmit", "pnpm exec eslint .", "pnpm test"] },
+      "api": { "base": "main", "checks": ["npx tsc --noEmit", "npm run lint", "npm test"] }
+    }
+  },
+  "claude": { "parallel": 2, "auditProfile": "quick", "auditBudget": 12 }
+}

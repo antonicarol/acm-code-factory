@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "local-db": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/local-db.mjs"]
+    }
+  }
+}

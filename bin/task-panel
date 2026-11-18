@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Opens the detail panel to the right of a coordinator: its agent flow on top (factory panel agentes --pane), the task's
+# screenshots under it (factory panel recursos) and the task's changes below (factory review: commits + files vs base + delta diff). task-start calls it; run it by hand
+# for a coordinator started earlier.
+# Usage: task-panel <coordinator_pane_id> <task_dir>
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+coord=${1:?coordinator pane}; dir=${2:?task dir}
+[ "${HERDR_ENV:-}" = 1 ] || command -v herdr >/dev/null || { echo "needs Herdr" >&2; exit 1; }
+right=$(herdr pane split "$coord" --direction right --ratio 0.55 --cwd "$dir" --no-focus | jq -r '.result.pane.pane_id')
+below=$(herdr pane split "$right" --direction down --ratio 0.35 --cwd "$dir" --no-focus | jq -r '.result.pane.pane_id')
+shots=$(herdr pane split "$right" --direction down --ratio 0.5 --cwd "$dir" --no-focus | jq -r '.result.pane.pane_id')
+herdr pane rename "$right" "agentes" >/dev/null 2>&1 || true
+herdr pane rename "$below" "cambios" >/dev/null 2>&1 || true
+herdr pane rename "$shots" "recursos" >/dev/null 2>&1 || true
+herdr pane run "$right" "$ENGINE/bin/panel agentes --pane $coord" >/dev/null
+herdr pane run "$below" "$ENGINE/bin/review" >/dev/null
+herdr pane run "$shots" "$ENGINE/bin/panel recursos" >/dev/null
+echo "panel: agentes $right · recursos $shots · cambios $below"

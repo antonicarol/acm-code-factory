@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Opens lazygit on the repo you are in. In a task folder (.tasks/<task>/, several repos)
+# it asks which one first. Bound in Herdr: prefix+d (popup) and prefix+alt+d (side pane).
+set -euo pipefail
+# A hub can be a git repo too: inside it (or in .tasks/<task>/) we want the task's repos, not the hub.
+root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [ -n "$root" ] && [ ! -e "$root/workspace.json" ]; then exec lazygit; fi
+repos=(); for d in */; do [ -e "$d.git" ] && repos+=("${d%/}"); done
+case ${#repos[@]} in
+  0) echo "no git repo here ($PWD)"; read -r -n1 -p "press a key"; exit 1 ;;
+  1) exec lazygit -p "${repos[0]}" ;;
+esac
+PS3="repo: "; select r in "${repos[@]}"; do [ -n "$r" ] && exec lazygit -p "$r"; done

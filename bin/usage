@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# The Claude account's usage: % of the 5 h and 7 d rate-limit windows and when each resets, as the status line of the
+# last kit session saw it (bin/lib/statusline). One line: "5h 42% · resets in 1 h 20 · 7d 63% · …  (2 min ago)".
+# Usage: usage            usage --json (the raw cache)
+f="${XDG_CACHE_HOME:-$HOME/.cache}/factory/usage.json"
+[ -f "$f" ] || { echo "no usage data: a kit session's status line saves it when it gets its first response"; exit 1; }
+[ "${1:-}" = --json ] && { cat "$f"; exit; }
+jq -r --argjson now "$(date +%s)" '
+  def win(name; w):
+    if w == null or (w.resets_at // 0) <= $now then "\(name) —"   # absent, or its window already reset
+    else ((w.resets_at - $now) / 60 | floor) as $m
+      | "\(name) \(w.used_percentage | floor)% · resets in \(if $m < 60 then "\($m) min" elif $m < 1440 then "\($m / 60 | floor) h \($m % 60)" else "\($m / 1440 | floor) d \($m % 1440 / 60 | floor) h" end)" end;
+  "\(win("5h"; .five_hour))   \(win("7d"; .seven_day))   (\(($now - .at) / 60 | floor) min ago)"' "$f"

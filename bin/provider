@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Which provider the kit sessions start on, for every hub: claude (Claude Code, default) or cursor (Cursor CLI with the
+# same kit: agents, skills; models mapped from opus/sonnet/haiku). Sessions already running keep theirs: restart them.
+# While the provider is claude and a live rate-limit window is at 95 % or more, a new task's coordinator starts on
+# cursor anyway (bin/lib/provider task); the orchestrator stays on claude.
+#   provider                 the current one and its models; says so when new tasks fall back to cursor
+#   provider claude|cursor   switch
+# Models and flags: bin/lib/providers.json; yours (wins, merged) in ~/.config/factory/providers.json, e.g.
+#   {"cursor": {"models": {"opus": "claude-opus-5-thinking-high", "sonnet": "gpt-5.6-luna-high"}}}
+set -euo pipefail
+lib="$(dirname "$0")/lib"; conf="$HOME/.config/factory"
+if [ -n "${1:-}" ]; then
+  FACTORY_PROVIDER=$1 "$lib/provider" config | jq -e 'type == "object"' >/dev/null || { echo "unknown provider: $1 (claude | cursor)" >&2; exit 1; }
+  mkdir -p "$conf"; echo "$1" > "$conf/provider"
+  echo "provider: $1. New sessions start on it; open ones keep theirs (restart them)."
+fi
+p=$("$lib/provider"); echo "provider: $p"
+"$lib/provider" config | jq -r '(.models // {}) | to_entries[] | "  \(.key) → \(.value)"'
+t=$("$lib/provider" task)
+[ "$t" = "$p" ] || echo "new tasks: $t (a Claude window is at 95% or more; the orchestrator stays on $p)"

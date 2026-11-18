@@ -1,0 +1,29 @@
+{
+  "repos": {},
+  "approvals": { "spec": "ask", "plan": "ask" },
+  "openspec": "auto",
+  "ship": "ask",
+  "uiTests": "off",
+  "uiEnv": "local",
+  "worktrees": "on-demand",
+  "reviewLoop": { "fixes": "ask", "resolveThreads": "bot-only", "bots": [], "rounds": 2 },
+  "panels": { "hub": ["agentes", "tareas", "prs"] },
+  "servers": [],
+  "routing": {
+    "tiny":   { "worker": "haiku",  "reviewer": "sonnet", "reviewerEffort": "medium" },
+    "low":    { "worker": "sonnet", "reviewer": "sonnet", "reviewerEffort": "medium" },
+    "medium": { "worker": "sonnet", "reviewer": "sonnet", "reviewerEffort": "high" },
+    "high":   { "worker": "opus",   "reviewer": "opus",   "reviewerEffort": "high", "planApproval": "ask" }
+  },
+  "gate": {
+    "protected": ["*.spec.ts", "*.test.ts", "*.spec.js", "*.test.js", "*eslint.config.*", "*tsconfig*.json"],
+    "attention": {
+      "migration": ["*/migrations/*"],
+      "dependencies": ["package.json", "*/package.json"],
+      "ci/deploy": [".github/*", "*Dockerfile*", "*docker-compose*"],
+      "env": ["*.env.example"]
+    },
+    "repos": {}
+  },
+  "claude": { "parallel": 2, "auditProfile": "quick", "auditBudget": 12 }
+}

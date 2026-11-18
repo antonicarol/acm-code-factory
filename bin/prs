@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# My open PRs in the org, newest first: review state, checks, pending review threads. Without args: the panel
+# (factory panel prs: enter = open in the browser, ? = checks, refresh every 2 min).
+#   prs --fetch   refresh the cache          prs --list   print it          prs --show <url>   preview
+. "$(dirname "$0")/lib/hub.sh"
+cache="$HUB/.board/prs.tsv"; mkdir -p "$HUB/.board"
+# The GitHub org of the hub's repos (the first one with a GitHub remote); none → my open PRs anywhere.
+org=$(for r in $(jq -r '(.repos // {}) | keys[]' "$HUB/workspace.json") */; do git -C "$HUB/$r" remote get-url origin 2>/dev/null && break; done | sed -nE 's#^.*github\.com[:/]([^/]+)/.*#\1#p' | head -1)
+
+fetch(){
+  local tmp; tmp=$(mktemp "$cache.XXXX")   # own file: the background refresh and ctrl-r can overlap
+  gh api graphql -f query="query{search(query:\"is:pr is:open archived:false author:@me${org:+ org:$org}\", type:ISSUE, first:50){nodes{... on PullRequest{
+      number title url isDraft updatedAt repository{name} reviewDecision
+      commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviewThreads(first:100){nodes{isResolved}}}}}}" \
+    --jq '.data.search.nodes | sort_by(.updatedAt) | reverse | .[] |
+      [.url, .repository.name, .number, (.reviewDecision // "-"), (.commits.nodes[0].commit.statusCheckRollup.state // "-"),
+       ([.reviewThreads.nodes[] | select(.isResolved | not)] | length), .isDraft, .updatedAt, .title] | @tsv' \
+    > "$tmp" 2>/dev/null && mv "$tmp" "$cache" || rm -f "$tmp"
+}
+
+list(){
+  [ -s "$cache" ] || { printf ' \t\033[2m  sin PRs abiertas (o cargando…)\033[0m\n'; return; }
+  local now; now=$(date +%s)
+  while IFS=$'\t' read -r url repo num rev chk thr draft upd title; do
+    case $rev in APPROVED) r=$'\033[32m✓ aprobada '; ;; CHANGES_REQUESTED) r=$'\033[31m✗ cambios  '; ;; REVIEW_REQUIRED) r=$'\033[33m○ pendiente'; ;; *) r=$'\033[2m· sin review'; ;; esac
+    case $chk in SUCCESS) c=$'\033[32m●'; ;; FAILURE|ERROR) c=$'\033[31m●'; ;; PENDING|EXPECTED) c=$'\033[33m◐'; ;; *) c=$'\033[2m·'; ;; esac
+    t=""; [ "$thr" -gt 0 ] && t=$'\033[33m'"💬$thr"
+    d=""; [ "$draft" = true ] && d=$'\033[2m[draft] '
+    age=$(( (now - $(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$upd" +%s 2>/dev/null || echo "$now")) / 3600 ))
+    [ "$age" -lt 24 ] && age="${age}h" || age="$((age/24))d"
+    printf '%s\t%s\033[0m %s\033[0m %-4s\033[0m %-26s %s%s\033[0m \033[2m%s\033[0m\n' "$url" "$r" "$c" "$t" "$repo#$num" "$d" "$title" "$age"
+  done < "$cache"
+}
+
+show(){ local url=$1; [ -n "${url// }" ] || return
+  gh pr view "$url" --json headRefName,baseRefName,reviewDecision,mergeable,url --jq '"\(.headRefName) → \(.baseRefName)\nreview: \(.reviewDecision // "-") · mergeable: \(.mergeable)\n\(.url)\n"'
+  gh pr checks "$url" 2>/dev/null | awk -F'\t' '{printf "  %-10s %s\n", $2, $1}' | head -15; }
+
+case "${1:-}" in --fetch) fetch; exit ;; --list) list; exit ;; --show) show "$2"; exit ;; esac
+
+exec "$ENGINE/bin/panel" prs   # the interactive list: panels/prs.sh

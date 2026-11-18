@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Opens the hub's own Herdr session (workspace.json herdr.session) in a new Ghostty window, creating the session if
+# needed, and starts the hub's orchestrator there if it is not running: in the first pane of a fresh session, else
+# in a new workspace. Works from anywhere, inside another Herdr session too: every herdr call here targets the hub's.
+# workspace.json: "herdr": {"session": "mobile", "title": "My App", "color": "#2f9e44"}   (title, color, icon optional)
+# Usage: open [--here]   --here: no window (bin/hubs attaches its own); just wait for the session and start the orchestrator
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+[ -n "$HUB_SESSION" ] || { echo "this hub has no session of its own: add \"herdr\": {\"session\": \"<name>\"} to $HUB/workspace.json" >&2; exit 1; }
+export HERDR_SESSION=$HUB_SESSION HERDR_SOCKET_PATH="$HOME/.config/herdr/sessions/$HUB_SESSION/herdr.sock"
+
+# Its own Ghostty instance (own dock icon): maximized, titled (herdr.title, else the hub folder) and, to tell the hubs
+# apart in the dock: herdr.icon = one of Ghostty's icons (xray, retro…) or an image path (png/jpeg/icns, ~ allowed);
+# else herdr.color = the official icon with a screen of that color.
+title=$(jq -r '.herdr.title // empty' "$HUB/workspace.json"); color=$(jq -r '.herdr.color // empty' "$HUB/workspace.json")
+icon=$(jq -r '.herdr.icon // empty' "$HUB/workspace.json"); icon=${icon/#\~/$HOME}
+[ -n "$icon" ] && [ -f "$HUB/$icon" ] && icon="$HUB/$icon"   # a path relative to the hub
+gargs=(--maximize=true --title="${title:-$(basename "$HUB")}")
+case "$icon" in
+  "") [ -n "$color" ] && gargs+=(--macos-icon=custom-style --macos-icon-frame=aluminum --macos-icon-ghost-color=#ffffff --macos-icon-screen-color="$color") ;;
+  /*) gargs+=(--macos-icon=custom --macos-custom-icon="$icon") ;;
+  *)  gargs+=(--macos-icon="$icon") ;;
+esac
+[ "${1:-}" = --here ] || /usr/bin/open -na Ghostty --args "${gargs[@]}" --command="$(command -v herdr) --session $HUB_SESSION"
+for _ in $(seq 60); do herdr workspace list >/dev/null 2>&1 && break; sleep 0.5; done   # the window starts the server
+ws=$(herdr workspace list 2>/dev/null) || { echo "session $HUB_SESSION did not respond in 30 s: check the Ghostty window" >&2; exit 1; }
+[ -n "$(orch_pane)" ] && { echo "session $HUB_SESSION open (its orchestrator is already running)"; exit 0; }
+
+# A fresh session has one workspace with one shell pane: use it. Otherwise a new workspace in the hub.
+if [ "$(jq '.result.workspaces | length == 1 and .[0].pane_count == 1' <<<"$ws")" = true ]; then
+  pane=$(herdr pane list --workspace "$(jq -r '.result.workspaces[0].workspace_id' <<<"$ws")" | jq -r '.result.panes[0].pane_id')
+else
+  pane=$(herdr workspace create --cwd "$HUB" --label "$HUB_LABEL" | jq -r '.result.root_pane.pane_id')
+fi
+herdr pane wait-output "$pane" --regex '[%$#>❯] ?$' --source visible --timeout 20000 >/dev/null 2>&1 || true
+herdr pane run "$pane" "cd '$HUB' && factory orchestrator -n orchestrator" >/dev/null
+echo "session $HUB_SESSION open; starting its orchestrator"

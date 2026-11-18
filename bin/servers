@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Dev servers of the workspace (workspace.json "servers"): which are up, and start / stop them. The list lives in
+# the hub panel (pane "servidores", factory hub-panel); each server runs in its own pane (label srv:<name>) of the
+# hub's "servidores" tab, created with the first one, so its logs stay visible. "Up" = its port is listening or its ready URL
+# answers, whoever started it: agents check the same URL first, so nothing is started twice.
+#   servers                  the panel (factory panel servidores): enter start (or go to its pane) · ctrl-x stop
+#   servers --list | start <name> | stop <name>
+# Entries with "open": true also open in the browser on enter.
+# Docker entries (docker skill): containers running but not answering = recompiling or broken, never touched;
+# stopped ones are offered `docker start` (safe, keeps them as they are); only when the repo has no containers at
+# all does it offer the entry's cmd (creating containers seeds the shared database), and only to a person at a
+# terminal. Never stopped from here.
+. "$(dirname "$0")/lib/hub.sh"; cfg="$HUB/workspace.json"
+
+entry(){ jq -c --arg n "$1" '.servers[] | select(.name == $n)' "$cfg"; }
+# Up = something listens on its port (a dev server mid-compile may not answer HTTP yet), or the URL answers.
+# $LISTENING (list: one lsof for every server) = the listening ports, one per line; unset = ask lsof for this port.
+up(){ local port; port=$(sed -nE 's#^https?://[^/:]+:([0-9]+).*#\1#p' <<<"$1")
+  { [ -n "$port" ] && if [ -n "${LISTENING+x}" ]; then grep -qx "$port" <<<"$LISTENING"; else lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; fi; } ||
+  case "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$1")" in
+    000|502|503|504) return 1 ;;   # behind the docker gateway (:80) these mean the service itself is down (404 = up: a running service without that route)
+  esac; }
+hubws(){ [ -n "${HUBWS:-}" ] && { echo "$HUBWS"; return; }   # start() looks it up once
+  herdr workspace list | jq -r --arg l "$HUB_LABEL" '.result.workspaces[] | select(.label == $l) | .workspace_id' | head -1; }
+panes(){ herdr pane list --workspace "$(hubws)" | jq -c '.result.panes[]'; }
+pane_of(){ panes | jq -r --arg l "srv:$1" 'select((.label // "" | rtrimstr(" ▸")) == $l) | .pane_id' | head -1; }   # " ▸" = minimized
+focus(){ local p; p=$(pane_of "$1"); [ -n "$p" ] || return 0
+  printf '{"id":"servers","method":"pane.focus","params":{"pane_id":"%s"}}\n' "$p" | nc -U -w 2 "${HERDR_SOCKET_PATH:-$HOME/.config/herdr/herdr.sock}" >/dev/null; }
+# "name state" of every container of the repo's compose project (working_dir is the hub path or the real one).
+containers(){ local a b; a="$HUB/$1"; b=$(cd "$HUB/$1" && pwd -P)
+  docker ps -a --format '{{.Names}} {{.State}} {{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null |
+    awk -v a="$a" -v b="$b" '$3 == a || $3 == b {print $1, $2}'; }
+tab_id(){ herdr tab list --workspace "$(hubws)" | jq -r '.result.tabs[] | select(.label == "servidores") | .tab_id' | head -1; }
+
+start(){
+  local e name repo cmd ready t last p; e=$(entry "$1"); [ -n "$e" ] || { echo "unknown server: $1" >&2; return 1; }
+  name=$(jq -r .name <<<"$e"); repo=$(jq -r .repo <<<"$e"); cmd=$(jq -r .cmd <<<"$e"); ready=$(jq -r .ready <<<"$e")
+  if up "$ready"; then echo "$name: already up ($ready)"; return 0; fi
+  HUBWS=$(hubws)
+  if [ "$(jq -r '.docker // false' <<<"$e")" = true ]; then
+    local cs stopped; cs=$(containers "$repo"); stopped=$(awk '$2 != "running" {print $1}' <<<"$cs" | xargs)
+    if [ -n "$stopped" ]; then   # docker start never recreates: no reseed
+      echo "$name: starting its stopped containers: docker start $stopped"; docker start $stopped >/dev/null && echo "$name: started; it may take a minute to compile"
+      return 0
+    elif [ -n "$cs" ]; then
+      echo "$name: its containers are running but $ready does not answer: recompiling (wait a minute) or broken (logs: docker logs <container>). Nothing recreated from here." >&2
+      return 1
+    fi
+    [ -t 0 ] || { echo "$name: no containers yet: a person creates them (\`$cmd\` in $repo; it seeds the shared database)" >&2; return 1; }
+    printf '%s: no containers yet. `%s` in %s creates them and SEEDS THE SHARED DATABASE. Create them? [y/N] ' "$name" "$cmd" "$repo"
+    read -r a; [ "$a" = y ] || return 0
+  fi
+  p=$(pane_of "$name")
+  if [ -n "$p" ]; then   # its pane exists but nothing answers: crashed or stopped by hand → run it again there,
+    # only if the pane is back at a shell prompt (still starting = typing into the running process)
+    if herdr pane wait-output "$p" --regex '[%$#>❯] ?$' --source visible --timeout 500 >/dev/null 2>&1; then
+      herdr pane run "$p" "$cmd" >/dev/null && echo "$name: restarted in its pane $p ($ready)"
+    else echo "$name: still starting in its pane $p"; fi
+    return 0
+  fi
+  [ -n "$(hubws)" ] || { echo "$name: no Herdr workspace labelled $HUB_LABEL" >&2; return 1; }
+  t=$(tab_id)
+  if [ -z "$t" ]; then   # first server: the tab's own pane runs it
+    p=$(herdr tab create --workspace "$(hubws)" --cwd "$HUB/$repo" --label servidores --no-focus | jq -r '.result.root_pane.pane_id')
+  else                   # the next ones stack under the last one
+    last=$(panes | jq -r --arg t "$t" 'select(.tab_id == $t) | .pane_id' | tail -1)
+    p=$(herdr pane split "$last" --direction down --cwd "$HUB/$repo" --no-focus | jq -r '.result.pane.pane_id')
+  fi
+  herdr pane rename "$p" "srv:$name" >/dev/null; herdr pane run "$p" "$cmd" >/dev/null
+  echo "$name: started in pane $p ($ready)"
+}
+
+stop(){
+  local e p; e=$(entry "$1"); [ -n "$e" ] || { echo "unknown server: $1" >&2; return 1; }
+  [ "$(jq -r '.docker // false' <<<"$e")" = true ] && { echo "$1: docker, never stopped from here" >&2; return 1; }
+  p=$(pane_of "$1"); [ -n "$p" ] || { echo "$1: not started from this panel, left alone" >&2; return 1; }
+  herdr pane close "$p" >/dev/null && echo "$1: stopped"
+}
+
+list(){
+  local here; here=$(panes | jq -r '.label // empty | rtrimstr(" ▸")' | sed -n 's/^srv://p')
+  LISTENING=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 { n = split($9, a, ":"); print a[n] }' | sort -u)
+  jq -r '.servers[] | [.name, .ready, .repo, (.docker // false)] | @tsv' "$cfg" | while IFS=$'\t' read -r name ready repo docker; do
+    if up "$ready"; then s=$'\033[32m● up  '; else s=$'\033[2m○ down'; fi
+    w=""; grep -qx "$name" <<<"$here" && w=$'\033[36m panel'
+    k=""; [ "$docker" = true ] && k=$'\033[2m docker'
+    short=${ready#http://localhost}; short=${short%/}
+    printf '%s\t%s\033[0m %-15s \033[2m%s\033[0m%s\033[0m%s\033[0m\n' "$name" "$s" "$name" "${short:-/}" "$w" "$k"
+  done
+}
+
+case "${1:-}" in
+  --list) list; exit ;;
+  start) start "$2"; exit ;;
+  stop) stop "$2"; exit ;;
+  --focus) focus "$2"; exit ;;
+  --browse) e=$(entry "$2"); [ "$(jq -r '.open // false' <<<"$e")" = true ] && { for _ in $(seq 20); do up "$(jq -r .ready <<<"$e")" && break; sleep 0.5; done; open "$(jq -r .ready <<<"$e")"; }; exit 0 ;;
+esac
+
+exec "$ENGINE/bin/panel" servidores   # the interactive list: panels/servidores.sh

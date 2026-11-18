@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Hands tasks to the hub's orchestrator from anywhere (a terminal, a script, another agent), with or without a tracker.
+#   factory task "<what and why>" [repo...]    one task; the repos are a hint, the orchestrator decides
+#   factory task -f <file>                      several: the file's tasks separated by a line with only ---
+#   factory task --list | --send <file> | --show <file> | --drop <file>     (the `tareas` panel)
+# Each task is a file in .board/inbox/ with the request in your words. The orchestrator gets it now if it is running
+# (Herdr), or picks the pending ones up when it starts; it moves the file to .board/inbox/done/ once it launches it.
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+inbox="$HUB/.board/inbox"; mkdir -p "$inbox/done"
+
+send(){   # $1 = an inbox file
+  local pane="" st="" name; name=$(basename "$1")
+  read -r pane st < <(orch_pane) || true
+  if [ -z "$pane" ]; then echo "queued: $name (no orchestrator running; it picks it up on start: factory orchestrator -n orchestrator)"
+  elif [ "$st" = blocked ]; then echo "queued: $name (the orchestrator is waiting for an answer from you: reply to it and send it from the tareas panel)"
+  elif herdr agent prompt "$pane" "[task] New task in the inbox: $1" >/dev/null 2>&1; then
+    echo "sent to the orchestrator: $name ($([ "$st" = working ] && echo 'queued behind what it is doing' || echo 'starts now'))"
+  else echo "queued: $name (could not notify the orchestrator)"; fi
+}
+
+add(){   # $1 = the request text, then the repos hinted
+  local text=$1 slug f; shift
+  slug=$(printf '%s' "$text" | head -1 | { iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null || true; } | tr -d "\"'\`^~" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | cut -c1-40 | sed 's/^-//; s/-$//') || slug=""   # only the file name: never fail on it
+  f="$inbox/$(date +%Y%m%d-%H%M%S)-${slug:-task}.md"; [ ! -e "$f" ] || f="${f%.md}-$RANDOM.md"
+  { echo "<!-- source: ${FACTORY_TASK_SOURCE:-factory task} · $(date '+%F %R') -->"; [ $# -eq 0 ] || echo "Repos: $*"; echo; printf '%s\n' "$text"; } > "$f"
+  send "$f"
+}
+
+title(){ grep -v '^<!--' "$1" | grep -v '^Repos:' | grep -m1 . | cut -c1-90; }
+
+case "${1:-}" in
+  ""|-h|--help) sed -n 2,7p "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  -f) [ -f "${2:-}" ] || { echo "does not exist: ${2:-<file>}" >&2; exit 1; }
+      tmp=$(mktemp -d); awk -v d="$tmp" 'BEGIN{n=1} /^---[[:space:]]*$/{n++; next} {print > (d "/" n)}' "$2"
+      for c in $(ls "$tmp" | sort -n); do grep -q '[^[:space:]]' "$tmp/$c" && add "$(cat "$tmp/$c")"; done; rm -rf "$tmp" ;;
+  --list) for f in "$inbox"/*.md; do [ -f "$f" ] && printf '%s\t%s  \033[2m%s\033[0m\n' "$f" "$(title "$f")" "$(basename "$f" | cut -c1-13)"; done
+          ls "$inbox"/*.md >/dev/null 2>&1 || printf '0\t\033[2minbox empty: factory task "<what and why>"\033[0m\n' ;;
+  --send) [ -f "${2:-}" ] && send "$2" ;;
+  --show) [ -f "${2:-}" ] && cat "$2" ;;
+  --drop) [ -f "${2:-}" ] && mv "$2" "$inbox/done/" && echo "dropped: $(title "$inbox/done/$(basename "$2")")" ;;
+  *) add "$@" ;;
+esac

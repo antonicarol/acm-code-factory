@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Runs a panel: a list in fzf with the same behaviour everywhere, defined by panels/<name>.sh (the hub's, else the engine's).
+#   panel <name> [args]              the interactive panel (what Herdr panes run)
+#   panel <name> --rows [args]       print its rows      panel <name> --fetch [args]   refresh its data
+#   panel <name> --run <key> <row-key> [args]   run its action for that key (what the bindings call)
+# Common to every panel: "▾ TITLE · help" header on the first line (a click on it minimizes / restores the pane,
+# factory fold), ctrl-r refresh, a background refresh every $REFRESH s, action output shown in the header.
+#
+# A definition (panels/<name>.sh, sourced; positional args of the panel are in "$@"):
+#   TITLE="MIS PRS"               header title                     HELP="enter: abrir"   key hints after it
+#   REFRESH=120                   background refresh, s (0 = off)  INPUT=1               0 hides the search line
+#   rows()     required: one row per line, "<key>\t<shown text>" (ANSI allowed); <key> is what actions get
+#   fetch()    optional: slow refresh (API, cache) run before the rows reload
+#   on_<key>() optional: action for an fzf key (on_enter, on_double-click, on_ctrl-o…), gets the row key in $1;
+#              whatever it prints goes to the header for a moment. A one-character key (on_1) acts only while the
+#              search is empty; with text in it, the character is typed
+#   INTERACTIVE="enter"           keys whose action needs the terminal (asks a question), run with execute
+#   preview()  optional: preview of the selected row (toggle with ?)
+. "$(dirname "$0")/lib/hub.sh"; self="$ENGINE/bin/panel"
+name=${1:?usage: panel <name> [--rows|--fetch|--run <key> <row>] [args]}; shift
+# The hub's own panels first (<hub>/panels/<name>.sh: new ones, or one of the engine's replaced), then the engine's.
+def="$HUB/panels/$name.sh"; [ -f "$def" ] || def="$ENGINE/panels/$name.sh"
+[ -f "$def" ] || { echo "no panel $name (ni $HUB/panels/$name.sh ni $ENGINE/panels/$name.sh)" >&2; exit 1; }
+mode=ui; case "${1:-}" in --rows|--fetch|--preview|--folded) mode=${1#--}; shift ;; --run) mode=run; key=$2; row=$3; shift 3 ;; esac
+
+TITLE=$name HELP="" REFRESH=0 INPUT=1 INTERACTIVE=""
+fetch(){ :; }
+# shellcheck source=/dev/null
+. "$def"
+
+case $mode in
+  rows) rows "$@"; exit ;;
+  folded) printf '\t\033[2m▸ click to open\033[0m\n'; exit ;;   # the one row a minimized panel shows
+  fetch) fetch "$@"; exit ;;
+  preview) preview "$@"; exit ;;
+  run) fn="on_$key"; declare -F "$fn" >/dev/null && "$fn" "$row"; exit ;;
+esac
+
+# Interactive: fzf with the common bindings, then one binding per on_<key> function of the definition.
+q(){ printf '%q ' "$@"; }
+me="$(q "$self" "$name")"; args="$(q "$@")"
+port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+# In Herdr the pane border already shows the title (the pane label): the header line is just "▾ keys".
+# No parentheses in TITLE / HELP: fzf actions end at the first ")".
+title=$TITLE; [ -n "${HERDR_PANE_ID:-}" ] && title=""
+header="▾ ${title:+$title · }${HELP:-click here to minimize}"
+# One background job: fetch + reload now, then every $REFRESH s. Colon form: (...) would end at the first ")".
+# While minimized (FZF_LINES small) the list stays empty, so the one visible line is the clickable header.
+reload="curl -s -XPOST localhost:$port -d 'transform:[ \$FZF_LINES -le 4 ] || echo \"reload($me--rows $args)\"'"
+job="( $me--fetch $args; $reload"
+[ "$REFRESH" -gt 0 ] 2>/dev/null && job+="; while sleep $REFRESH; do $me--fetch $args; $reload || exit 0; done"
+job+=" ) >/dev/null 2>&1 &"
+binds=(--bind "start:execute-silent:$job"
+       --bind "ctrl-r:change-header(▾ ↻ refreshing…)+execute-silent:( $me--fetch $args; curl -s -XPOST localhost:$port -d 'reload($me--rows $args)+change-header($header)' ) >/dev/null 2>&1 &"
+       --bind "click-header:execute-silent($ENGINE/bin/fold \$HERDR_PANE_ID)"
+       # Minimized (factory fold leaves one line): no search line (that hides the header too) and a single
+       # "▸ click to open" row; a click anywhere on it restores the pane. Normal size: rows back.
+       --bind "resize:transform:[ \$FZF_LINES -le 4 ] && echo 'hide-input+change-pointer( )+reload($me--folded)' || echo 'show-input+change-pointer(▶)+change-header($header)+reload($me--rows $args)'"
+       --bind "left-click:transform:[ \$FZF_LINES -le 4 ] && echo 'execute-silent($ENGINE/bin/fold \$HERDR_PANE_ID)' || true")
+for fn in $(declare -F | awk '{print $3}' | grep '^on_'); do
+  k=${fn#on_}
+  if [ ${#k} = 1 ]; then   # a printable key (on_1…): its action with the search empty, else it is typed in the search
+    binds+=(--bind "$k:transform:[ -n \"\$FZF_QUERY\" ] && echo 'put($k)' || { $me--run $k {1} $args >/dev/null; echo 'reload($me--rows $args)'; }")
+  elif [[ " $INTERACTIVE " == *" $k "* ]]; then
+    binds+=(--bind "$k:execute($me--run $k {1} $args; sleep 1)+reload($me--rows $args)")
+  else   # the action's output, if any, goes after the title; it runs first so the reload sees what it changed
+    # (~…~ delimits the action: its body has parentheses and braces; no ~ in TITLE / HELP either)
+    binds+=(--bind "$k:transform-header~out=\$($me--run $k {1} $args); echo \"$header\${out:+ · \$out}\"~+reload($me--rows $args)")
+  fi
+done
+opts=(--ansi --no-sort --track --layout=reverse --delimiter='\t' --with-nth=2.. --no-multi --listen="$port"
+      --header="$header" --header-first --no-separator --prompt='buscar › ' --pointer='▶' --info=inline-right)
+[ "$INPUT" = 0 ] && opts+=(--no-input --pointer=' ' --gutter=' ' --no-scrollbar)
+declare -F preview >/dev/null && opts+=(--preview="$me--preview {1} $args" --preview-window='down,40%,border-top,hidden') && binds+=(--bind '?:toggle-preview')
+FZF_DEFAULT_OPTS= exec fzf "${opts[@]}" "${binds[@]}" < <(rows "$@")

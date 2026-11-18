@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# One Ghostty window for every hub. Run as the window's command, it attaches to the Herdr session of the hub you pick
+# (hubs = OpenSpec stores whose workspace.json has herdr.session) and starts its orchestrator if it is not running.
+# Detach (prefix+q) or the switch key (prefix+h → `factory hubs --switch`) bring the picker / the next hub, same window.
+# Usage: hubs            the window's loop (Ghostty: command = ~/.local/bin/factory hubs)
+#        hubs --switch   pick a hub and move that window to it (from a Herdr key, in a popup)
+set -uo pipefail
+ENGINE="$(cd "$(dirname "$0")/.." && pwd)"
+state=~/.cache/factory; mkdir -p "$state"
+
+hubs(){
+  openspec store list --json 2>/dev/null | jq -r '.stores[].root' | while read -r d; do
+    s=$(jq -r '.herdr.session // empty' "$d/workspace.json" 2>/dev/null || true); [ -n "$s" ] || continue
+    t=$(jq -r '.herdr.title // empty' "$d/workspace.json"); mark=" "; [ "$s" = "${HERDR_SESSION:-}" ] && mark="●"
+    printf '%s %s\t%s\n' "$mark" "${t:-$(basename "$d")}" "$d"
+  done
+}
+pick(){ hubs | fzf --delimiter='\t' --with-nth=1 --prompt='hub> ' --reverse --no-info | cut -f2; }
+
+if [ "${1:-}" = --switch ]; then
+  hub=$(pick); [ -n "$hub" ] || exit 0
+  tty=$(cat "$state/hubs.tty" 2>/dev/null || true)
+  # ps, not pgrep -t (it matches nothing on macOS). ponytail: one hubs window, the last one opened
+  client=$([ -n "$tty" ] && ps -t "$tty" -o pid=,comm= 2>/dev/null | awk '$2 == "herdr" {print $1}')
+  [ -n "$client" ] || FACTORY_HUB=$hub exec "$ENGINE/bin/open"   # no hubs window: the hub's own, as before
+  echo "$hub" > "$state/hubs.next"
+  kill $client   # the client exits, its session keeps running; the window's loop attaches to the next
+  exit 0
+fi
+
+t=$(tty) && echo "${t#/dev/}" > "$state/hubs.tty"
+while :; do
+  if [ -s "$state/hubs.next" ]; then hub=$(cat "$state/hubs.next"); rm -f "$state/hubs.next"
+  else hub=$(pick); [ -n "$hub" ] || exit 0; fi
+  s=$(jq -r '.herdr.session' "$hub/workspace.json"); title=$(jq -r '.herdr.title // empty' "$hub/workspace.json")
+  printf '\e]0;%s\a' "${title:-$(basename "$hub")}"
+  FACTORY_HUB=$hub "$ENGINE/bin/open" --here >"$state/hubs-open.log" 2>&1 &
+  herdr --session "$s"
+  stty sane 2>/dev/null; printf '\e[?1049l\e[?25h\e[2J\e[H'   # a killed client may leave the screen as it was
+done

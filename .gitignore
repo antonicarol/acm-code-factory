@@ -1,0 +1,8 @@
+.DS_Store
+__pycache__/
+node_modules/
+# Runtime state of a hub (a hub is its own folder, but keep it out if you test inside this repo)
+.board/
+.tasks/
+.env
+.env.*

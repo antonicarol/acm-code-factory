@@ -1,0 +1,17 @@
+{
+  "env": {
+    "CLAUDE_CODE_PLUGIN_DIRS": ""
+  },
+  "enabledPlugins": {
+    "runpod@runpod": false,
+    "postman@claude-plugins-official": false,
+    "token-farm@toni-local": false,
+    "swift-lsp@claude-plugins-official": false
+  },
+  "permissions": {
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.*)"
+    ]
+  }
+}

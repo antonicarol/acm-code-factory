@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Moves a task that started in worktrees (main checkout was busy) to the main checkouts, so you can
+# test it with your own dev servers. Uncommitted work travels with it in a stash kept by its id: if a step
+# fails, the work is put back in the worktree, or the message says exactly which stash holds it.
+# Same "busy" rule and lock as task-start: never switches a main checkout away from another task, uncommitted
+# changes or (worktrees on-demand) your own branch. Run it with the task's agents idle.
+# Usage: task-move <task>
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+task=${1:?task}
+dir="$HUB/.tasks/$task"
+[ -d "$dir" ] || { echo "no task folder $dir" >&2; exit 1; }
+. "$ENGINE/bin/lib/checkout.sh"
+hub_lock task-move
+
+for wt in "$dir"/*; do
+  [ -L "$wt" ] || [ ! -e "$wt/.git" ] && continue   # already in the main checkout, or not a repo
+  name=$(basename "$wt")
+  src=$(cd "$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)/.." && pwd -P)
+  branch=$(git -C "$wt" branch --show-current)
+  repo=$(cd "$HUB" && for r in */ $(jq -r '(.repos // {}) | keys[] + "/"' "$HUB/workspace.json"); do [ "$(cd "$r" 2>/dev/null && pwd -P)" = "$src" ] && echo "${r%/}" && break; done || true)
+  mode=$(jq -r --arg r "$repo" 'if (.repos[$r] // {}) | has("worktrees") then .repos[$r].worktrees else (.worktrees // false) end' "$HUB/workspace.json")
+  base=$(jq -r --arg r "$repo" '.repos[$r].base // "main"' "$HUB/workspace.json")   # workspace.json repos.<repo>.base
+  busy=$(main_busy "$src" "$name" "$task" "$mode" "$base" "$branch")
+  [ -z "$busy" ] || { echo "$name: the main checkout ($src) $busy: free it first (factory task-end that task, commit, or switch it to its base)" >&2; exit 1; }
+
+  stash=""
+  if [ -n "$(git -C "$wt" status --porcelain)" ]; then
+    git -C "$wt" stash push -q -u -m "task-move $task"
+    stash=$(git -C "$wt" rev-parse -q --verify refs/stash)   # under the lock: ours (the stash list is shared by every worktree)
+  fi
+  drop(){ local ref; ref=$(git -C "$src" stash list --format='%gd %H' | awk -v s="$stash" '$2 == s {print $1; exit}'); [ -z "$ref" ] || git -C "$src" stash drop -q "$ref"; }
+  back(){   # undo: the worktree gets its branch and its work again
+    git -C "$wt" switch -q "$branch" 2>/dev/null || true
+    [ -z "$stash" ] || { git -C "$wt" stash apply -q "$stash" && drop; } || true
+    echo "$name: task-move stopped: $1. The task is still in its worktree, as before." >&2; exit 1; }
+  kept(){ echo "$name: task-move stopped: $1." >&2
+    [ -z "$stash" ] || echo "  Your uncommitted work is safe in stash $stash: git -C $src stash apply $stash" >&2; exit 1; }
+
+  ts=$(jq -r --arg r "$repo" '.repos[$r].taskServers // false' "$HUB/workspace.json")   # its fronts run per worktree (the hub's task-servers)
+  [ "$ts" = true ] && { "$HUB/bin/task-servers" "$task" stop >/dev/null || true; }
+  git -C "$wt" switch -q --detach || back "could not detach the worktree"
+  git -C "$src" switch -q "$branch" || back "could not switch $src to $branch"
+  git -C "$src" worktree remove "$wt" || kept "$branch is checked out in $src, but the worktree $wt could not be removed (remove it, then: ln -s $src $wt)"
+  [ "$ts" = true ] && rm -f "$HUB/.board/servers/$task".*   # its slot went with the worktree
+  ln -s "$src" "$wt"
+  [ -z "$stash" ] || { git -C "$src" stash apply -q "$stash" && drop; } || kept "$branch is checked out in $src, but its uncommitted work did not apply cleanly there"
+  echo "$name: $branch is now checked out in $src"
+done

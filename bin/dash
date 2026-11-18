@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Web dashboard of the hub: orchestrator, one coordinator per task and their subagents, drawn as a diagram.
+# Reads what the engine already writes (herdr agent list + the kit hook's .board/<session> logs); keeps no state.
+# `dash [port]` (default 7717): serves templates/dash.html on 127.0.0.1 and opens it. Ctrl+C stops it.
+. "$(dirname "$0")/lib/hub.sh"
+port=${1:-7717}
+(sleep 0.5; open "http://127.0.0.1:$port") &
+exec python3 - "$HUB" "$ENGINE/templates/dash.html" "$port" "$HUB_LABEL" <<'PY'
+import glob, json, os, subprocess, sys, time
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+hub, page, port, label = sys.argv[1:5]
+board = os.environ.get("FACTORY_BOARD_DIR") or os.path.join(hub, ".board")
+
+def log_for(pane):
+    # ponytail: reads every .meta per request (a few hundred small files); cache by filename if it gets slow
+    hits = []
+    for m in glob.glob(board + "/*.meta"):
+        try:
+            if "pane=" + pane in open(m).read().splitlines():
+                hits.append(m)
+        except OSError:
+            pass
+    return max(hits, key=os.path.getmtime)[:-5] if hits else None
+
+def subs(log):
+    rows = []
+    try:
+        for line in open(log):
+            p = line.rstrip("\n").split("|")
+            if len(p) >= 5:
+                rows.append({"type": p[1], "desc": p[2], "start": int(p[3] or 0), "end": int(p[4]) if p[4] else None})
+    except (OSError, TypeError, ValueError):
+        return []
+    return sorted(rows, key=lambda r: r["start"])  # every run of the session, in launch order
+
+def sessions():
+    agents = None
+    # the hub's Herdr session first; if it is not running, the default server (agents filtered by cwd below)
+    for env in (os.environ, {k: v for k, v in os.environ.items() if k not in ("HERDR_SESSION", "HERDR_SOCKET_PATH")}):
+        try:
+            out = subprocess.run(["herdr", "agent", "list"], capture_output=True, text=True, timeout=5, env=env).stdout
+            agents = json.loads(out)["result"]["agents"]
+            break
+        except Exception:
+            pass
+    res = []
+    if agents is not None:
+        for a in agents:
+            cwd = a.get("cwd") or ""
+            if cwd != hub and not cwd.startswith(hub + "/"):
+                continue  # Herdr lists the agents of every hub sharing the session
+            title = a.get("terminal_title_stripped") or a.get("name") or ""
+            orch = title == "orchestrator"
+            res.append({"pane": a.get("pane_id"), "status": a.get("agent_status"), "orchestrator": orch,
+                        "task": "" if orch else os.path.basename(cwd) if "/.tasks/" in cwd else title,
+                        "title": title, "subs": subs(log_for(a.get("pane_id") or ""))})
+    else:  # no Herdr: the .board logs touched in the last 12h
+        for m in glob.glob(board + "/*.meta"):
+            log = m[:-5]
+            if os.path.exists(log) and time.time() - os.path.getmtime(log) < 43200:
+                pane = next((l[5:] for l in open(m).read().splitlines() if l.startswith("pane=")), "") or os.path.basename(log)[:8]
+                res.append({"pane": None, "status": "unknown", "orchestrator": False,
+                            "task": pane, "title": pane, "subs": subs(log)})
+    return res
+
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/state.json"):
+            body, kind = json.dumps({"hub": label, "now": int(time.time()), "sessions": sessions()}).encode(), "application/json"
+        elif self.path in ("/", "/index.html"):
+            body, kind = open(page, "rb").read(), "text/html; charset=utf-8"
+        else:
+            self.send_error(404); return
+        self.send_response(200)
+        self.send_header("Content-Type", kind)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+
+print(f"dash: http://127.0.0.1:{port}  ({label})  · Ctrl+C to stop", flush=True)
+ThreadingHTTPServer(("127.0.0.1", int(port)), H).serve_forever()
+PY

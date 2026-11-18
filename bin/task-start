@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Prepares the task's repos and starts its coordinator in a new Herdr workspace.
+# Usage: task-start [--senior] <task> <repo>:<branch>:<base> [<repo>:<branch>:<base> ...]
+#   repo is relative to the hub, e.g. my-api:PROJ-123-slug:main
+#   --senior: the senior coordinator (kit/agents/senior.md, on Fable) instead of the coordinator, for structural UI work
+# Per repo, workspace.json decides (`.repos[repo].worktrees`, else `.worktrees`):
+#   worktrees=true  → git worktree in .tasks/<task>/<repo> (parallel tasks, separate checkout)
+#   worktrees=false → branch switched in the main checkout, linked from .tasks/<task>/<repo>
+#                     (your dev server sees the changes); if that checkout is busy (another task or
+#                     uncommitted changes) it falls back to a worktree, moved back later with factory task-move
+#   worktrees=on-demand → like false, but the main checkout also counts as busy when it is on any branch
+#                     other than the base (or the task's own): your work in progress is never switched away
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+role=coordinator; title=coordinator   # pr-watch finds the task's session by "coordinator" in its title
+[ "${1:-}" = --senior ] && { role=senior; title="senior coordinator"; shift; }
+task=${1:?task}; shift
+[ $# -gt 0 ] || { echo "at least one <repo>:<branch>:<base>" >&2; exit 1; }
+[ "${HERDR_ENV:-}" = 1 ] || { echo "run inside Herdr" >&2; exit 1; }
+# Full task = an OpenSpec change (openspec/changes/<task>/); lite task = briefs/<task>/brief.md.
+# Neither yet = only the orchestrator's request (.board/requests/<task>.md): the coordinator has the specker write it.
+change="$HUB/openspec/changes/$task"; lite="$HUB/briefs/$task/brief.md"; request="$HUB/.board/requests/$task.md"
+if [ ! -d "$change" ] && { [ -f "$lite" ] || [ -f "$request" ]; }; then :
+elif [ ! -d "$change" ]; then echo "missing $request (or an OpenSpec change $change, or a lite brief $lite)" >&2; exit 1
+# openspec validate needs at least one delta; a change without specs/ (refactor, tooling) only needs proposal + tasks
+elif [ -d "$change/specs" ]; then
+  (cd "$HUB" && openspec validate "$task" >/dev/null) || { echo "change $task does not validate (openspec validate $task)" >&2; exit 1; }
+else
+  [ -f "$change/proposal.md" ] && [ -f "$change/tasks.md" ] || { echo "change $task needs proposal.md and tasks.md" >&2; exit 1; }
+fi
+. "$ENGINE/bin/lib/checkout.sh"
+ws=$(task_ws "$task"); [ -z "$ws" ] || { echo "$task is already running (Herdr workspace $ws): talk to its coordinator, or factory task-end $task first" >&2; exit 1; }
+dir="$HUB/.tasks/$task"
+mkdir -p "$dir"
+hub_lock task-start
+names=""; adddirs=(); front_setup=""; setups=()
+# workspace.json uiEnv (default demo): a front worktree runs against demo, whatever the main checkout points at.
+ui_env=$(jq -r '.uiEnv // "demo"' "$HUB/workspace.json")
+for arg; do
+  IFS=: read -r repo branch base <<<"$arg"
+  [ -n "$repo" ] && [ -n "$branch" ] && [ -n "$base" ] && [ -d "$HUB/$repo" ] || { echo "bad repo spec '$arg': <repo>:<branch>:<base>, repo relative to the hub" >&2; exit 1; }
+  src="$(cd "$HUB/$repo" && pwd -P)"; name="$(basename "$repo")"; dst="$dir/$name"
+  use_wt=$(jq -r --arg r "$repo" 'if (.repos[$r] // {}) | has("worktrees") then .repos[$r].worktrees else (.worktrees // false) end' "$HUB/workspace.json")
+  if [ ! -e "$dst" ]; then
+    start=$base
+    if git -C "$src" remote get-url origin >/dev/null 2>&1; then
+      if git -C "$src" fetch -q origin "$base"; then start="origin/$base"; else echo "warn: fetch of $base failed, using the local $base" >&2; fi
+    fi
+    if [ "$use_wt" != true ]; then   # main checkout busy (another task, or your own changes): this task starts in a worktree; factory task-move brings it back
+      busy=$(main_busy "$src" "$name" "$task" "$use_wt" "$base" "$branch")
+      [ -n "$busy" ] && { echo "note: $repo $busy → worktree; when it is free: factory task-move $task" >&2; use_wt=true; }
+    fi
+    if [ "$use_wt" = true ]; then
+      if git -C "$src" show-ref -q --verify "refs/heads/$branch"; then git -C "$src" worktree add -q "$dst" "$branch"   # restarted task
+      else git -C "$src" worktree add -q -b "$branch" "$dst" "$start"; fi
+      # A worktree starts without the main checkout's local env files (gitignored): copy them, never read them.
+      for f in "$src"/.env*; do
+        [ -f "$f" ] && [ ! -e "$dst/${f##*/}" ] && git -C "$src" check-ignore -q "$f" && cp "$f" "$dst/"
+      done
+      # workspace.json repos.<repo>.setup: what a fresh worktree needs (install, local env files from $SRC, the main checkout)
+      setup=$(jq -r --arg r "$repo" '.repos[$r].setup // empty' "$HUB/workspace.json"); [ -z "$setup" ] || setups+=("$name"$'\t'"$src"$'\t'"$setup")
+      # A repo with taskServers (workspace.json) runs its own servers per worktree with the hub's task-servers: it picks
+      # a port slot now, and install + build run in the background once the lock is free.
+      if [ "$(jq -r --arg r "$repo" '.repos[$r].taskServers // false' "$HUB/workspace.json")" = true ]; then
+        "$HUB/bin/task-servers" "$task" seed && front_setup=1
+        if [ "$ui_env" = demo ]; then echo "$name: api $("$HUB/bin/task-servers" "$task" env demo)"; fi
+      fi
+    else
+      git -C "$src" switch -q "$branch" 2>/dev/null || git -C "$src" switch -q -c "$branch" "$start"
+      ln -s "$src" "$dst"
+    fi
+  fi
+  roles=$(jq -r --arg r "$repo" '(.repos[$r].roles // []) | join("+")' "$HUB/workspace.json")   # the coordinator plans by role (ui, api, infra)
+  names+=" $name${roles:+ ($roles)}"; adddirs+=(--add-dir "$src")
+done
+
+hub_unlock   # checkouts are prepared: the rest (agent start) can run in parallel
+[ -n "$front_setup" ] && { nohup "$HUB/bin/task-servers" "$task" setup >/dev/null 2>&1 & }
+for s in ${setups[@]+"${setups[@]}"}; do   # before the coordinator: its workers and the gate need it ready
+  IFS=$'\t' read -r name src setup <<<"$s"; log="$HUB/.board/setup/$task-$name.log"; mkdir -p "$HUB/.board/setup"
+  echo "$name: setup ($setup)…"
+  (cd "$dir/$name" && SRC="$src" bash -c "$setup") > "$log" 2>&1 && echo "$name: setup ok" || echo "warn: $name setup failed, the coordinator will see it ($log)" >&2
+done
+# One read of the hub's config: the coordinator's brief and the task's record (.board/tasks/<task>.json: its Herdr workspace for task-end, and the config it ran with).
+cfg=$(jq -c '{plan: (.approvals.plan // "ask"), spec: (.approvals.spec // "ask"), ship: (.ship // "off"), uiTests: (.uiTests // "on"),
+  uiEnv: (.uiEnv // "demo"), worktrees: (.worktrees // false)}' "$HUB/workspace.json")
+IFS=$'\t' read -r plan_approval spec_approval ship ui_tests < <(jq -r '[.plan, .spec, .ship, .uiTests] | @tsv' <<<"$cfg")
+# The kit this task ran with: the engine's commit (+ -dirty with uncommitted changes).
+kit=$(git -C "$ENGINE" rev-parse --short HEAD 2>/dev/null || echo unknown)
+[ -z "$(git -C "$ENGINE" status --porcelain 2>/dev/null)" ] || kit+=-dirty
+# Coordinator provider: the global one, or cursor when a live Claude window is at 95 % or more (bin/lib/provider task).
+global=$("$ENGINE/bin/lib/provider"); prov=$("$ENGINE/bin/lib/provider" task)
+[ "$role" = coordinator ] || prov=$global   # the senior runs on Fable, outside the Claude window that check measures
+mkdir -p "$HUB/.board/tasks"
+jq -n --arg t "$task" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg kit "$kit" --arg prov "$prov" --argjson cfg "$cfg" \
+  --arg role "$role" '{task: $t, started: $at, provider: $prov, agent: $role, kit: (($cfg | del(.spec)) + {version: $kit})}' > "$HUB/.board/tasks/$task.json"
+agent=$(printf '%s' "$task" | tr 'A-Z' 'a-z' | cut -c1-32)
+label=$(task_label "$task")
+pane=$(herdr workspace create --cwd "$dir" --label "$label" --no-focus | jq -r '.result.root_pane.pane_id')
+# task-end closes the workspace by this id (labels repeat: two tasks of one ticket share "PROJ-123").
+jq --arg w "${pane%%:*}" '. + {workspace: $w}' "$HUB/.board/tasks/$task.json" > "$HUB/.board/tasks/$task.json.tmp" \
+  && mv "$HUB/.board/tasks/$task.json.tmp" "$HUB/.board/tasks/$task.json"
+# The brief goes in as claude's initial prompt: it survives startup dialogs and needs no second send.
+# Kept short: macOS caps the whole command line at 1024 bytes (MAX_CANON); the coordinator knows the rest.
+store=$(sed -n 's/^id: *//p' "$HUB/.openspec-store/store.yaml")
+if [ -d "$change" ]; then brief="Task $task (OpenSpec change in store $store)."
+elif [ -f "$lite" ]; then brief="Lite task $task (no OpenSpec): brief in the hub at briefs/$task/brief.md."
+else brief="Task $task, no spec yet: request in the hub at .board/requests/$task.md. Spec approval: $spec_approval."; fi
+brief+=" Repos here:$names. Plan approval: $plan_approval. Ship: $ship. UI tests: $ui_tests. UI env: $ui_env."
+# Detail panel on the right (agent flow + diff); opened first so it is there even if startup stops on a dialog.
+"$ENGINE/bin/task-panel" "$pane" "$dir" >/dev/null 2>&1 || echo "note: could not open the detail panel (factory task-panel $pane $dir)"
+export FACTORY_PROVIDER=$prov
+[ "$prov" = "$global" ] || echo "note: Claude window at 95% or more → coordinator starts on Cursor; the orchestrator stays on Claude"
+rc=0; "$ENGINE/bin/lib/start-agent" "$pane" "$agent" "$label" \
+  --plugin-dir "$("$ENGINE/bin/lib/kit-dir")" --agent "factory:$role" --add-dir "$HUB" "${adddirs[@]}" -n "$label · $title" \
+  --settings "$("$ENGINE/bin/lib/kit-settings")" "$brief" || rc=$?
+[ "$rc" = 1 ] && exit 1; [ "$rc" = 2 ] && exit 0
+echo "started coordinator '$agent' in Herdr workspace '$label' ($dir)"

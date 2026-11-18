@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Starts the changelog session (kit agent factory:changelog) on the hub. Inside Herdr, in its own workspace
+# "changelog" with its agent flow on the right; outside, in this terminal. Output: <hub>/changelogs/<date>/.
+# Usage: changelog [request in words]   e.g. changelog since 2026-11-01 · changelog last week
+#        changelog redo the videos and the HTML of the 2026-11-14 changelog
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+brief="Changelog of the hub $HUB. Request: ${*:-the changelog since the last one}."
+[ "${HERDR_ENV:-}" = 1 ] || exec "$ENGINE/bin/claude-kit" changelog -n changelog "$brief"
+pane=$(herdr workspace create --cwd "$HUB" --label changelog --no-focus | jq -r '.result.root_pane.pane_id')
+right=$(herdr pane split "$pane" --direction right --ratio 0.6 --cwd "$HUB" --no-focus | jq -r '.result.pane.pane_id')
+herdr pane rename "$right" agentes >/dev/null 2>&1 || true
+herdr pane run "$right" "$ENGINE/bin/panel agentes --pane $pane" >/dev/null
+rc=0; "$ENGINE/bin/lib/start-agent" "$pane" changelog changelog \
+  --plugin-dir "$("$ENGINE/bin/lib/kit-dir")" --agent factory:changelog --add-dir "$HUB" -n changelog \
+  --settings "$("$ENGINE/bin/lib/kit-settings")" "$brief" || rc=$?
+[ "$rc" = 0 ] && echo "changelog started in Herdr workspace 'changelog' → $HUB/changelogs/"
+[ "$rc" != 1 ]

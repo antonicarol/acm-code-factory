@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Herdr split ratios size the ORIGINAL pane (left / top): 0.6 = orchestrator keeps 60 %.
+# Hub panel to the right of the orchestrator: the panels listed in workspace.json panels.hub, stacked
+# (agentes · notion · prs · servidores by default). Each one is panels/<name>.sh run by factory panel.
+# claude-kit opens it when the orchestrator starts, unless the workspace already has other panes.
+# Usage: hub-panel [--replace] [orchestrator_pane_id]   --replace closes the other panes of the orchestrator's tab first.
+. "$(dirname "$0")/lib/hub.sh"
+replace=""; [ "${1:-}" = --replace ] && { replace=1; shift; }
+orch=${1:-${HERDR_PANE_ID:?run inside Herdr or pass the pane id}}
+ws=${orch%%:*}
+# Only the orchestrator's tab: the servidores tab (srv:* panes, running dev servers) is never touched.
+others=$(herdr pane list --workspace "$ws" 2>/dev/null | jq -r --arg o "$orch" '.result.panes as $p
+  | ($p[] | select(.pane_id == $o) | .tab_id) as $t
+  | $p[] | select(.pane_id != $o and .tab_id == $t and ((.label // "") | startswith("srv:") | not)) | .pane_id')
+if [ -n "$others" ]; then
+  [ -n "$replace" ] || exit 0          # user-arranged (or already open): leave it alone
+  for p in $others; do herdr pane close "$p" >/dev/null 2>&1; rm -f "$HUB/.board/fold/${p//:/_}"; done   # + its minimized state
+fi
+# The panels, stacked in one column with the same height: workspace.json panels.hub (each one is panels/<name>.sh).
+names=(); while IFS= read -r p; do names+=("$p"); done < <(jq -r '.panels.hub[]' "$HUB/workspace.json")   # bash 3.2: no mapfile
+n=${#names[@]}; [ "$n" -gt 0 ] || { echo "workspace.json has no panels.hub" >&2; exit 1; }
+pane=$(herdr pane split "$orch" --direction right --ratio 0.6 --cwd "$HUB" --no-focus | jq -r '.result.pane.pane_id')
+ids=("$pane")
+for ((i = 1; i < n; i++)); do   # the pane above keeps 1/(panels left) of what remains
+  pane=$(herdr pane split "$pane" --direction down --ratio "$(LC_ALL=C awk -v k=$((n - i + 1)) 'BEGIN { printf "%.4f", 1 / k }')" --cwd "$HUB" --no-focus | jq -r '.result.pane.pane_id')
+  ids+=("$pane")
+done
+for ((i = 0; i < n; i++)); do
+  herdr pane rename "${ids[$i]}" "${names[$i]}" >/dev/null 2>&1
+  herdr pane run "${ids[$i]}" "$ENGINE/bin/panel ${names[$i]}" >/dev/null
+done
+echo "hub panel: $(for ((i = 0; i < n; i++)); do printf '%s %s · ' "${names[$i]}" "${ids[$i]}"; done)"

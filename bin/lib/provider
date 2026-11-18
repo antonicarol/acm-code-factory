@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# The provider the kit sessions run on: claude (default) or cursor. `factory provider` sets it.
+#   provider              its name ($FACTORY_PROVIDER, else ~/.config/factory/provider, else claude)
+#   provider config       its config: bin/lib/providers.json merged with ~/.config/factory/providers.json (yours wins)
+#   provider model <m>    the model to use for a kit model name (opus|sonnet|haiku); unmapped names pass through
+#   provider task         provider for a new coordinator: the global one, except while it is claude and a live
+#                         rate-limit window (5 h or 7 d, ~/.cache/factory/usage.json) is at 95 % or more → cursor.
+#                         The orchestrator is not affected: it already started on the global provider.
+conf="$HOME/.config/factory"
+name=${FACTORY_PROVIDER:-$(cat "$conf/provider" 2>/dev/null)}; name=${name:-claude}
+config(){ local mine="$conf/providers.json"; [ -f "$mine" ] || mine=/dev/null
+          jq -s --arg p "$name" '(.[0] * (.[1] // {}))[$p] // error("unknown provider \($p)")' \
+            "$(dirname "$0")/providers.json" "$mine" 2>/dev/null || echo null; }
+# A coordinator burns a whole task. Past 95 % of a window that has not reset, start it on Cursor.
+claude_tight(){ local f="${XDG_CACHE_HOME:-$HOME/.cache}/factory/usage.json"
+  [ -f "$f" ] || return 1
+  jq -e --argjson now "$(date +%s)" '
+    [.five_hour, .seven_day]
+    | map(select(type == "object" and (.resets_at // 0) > $now and (.used_percentage // 0) >= 95))
+    | length > 0' "$f" >/dev/null; }
+case "${1:-}" in
+  "")     echo "$name" ;;
+  config) config ;;
+  model)  config | jq -r --arg m "$2" '.models[$m] // $m' ;;
+  task)   if [ "$name" = claude ] && claude_tight; then echo cursor; else echo "$name"; fi ;;
+esac

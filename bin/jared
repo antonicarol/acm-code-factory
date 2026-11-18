@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Jared, the task-creation coordinator (kit agent factory:jared), in its own Herdr workspace "jared" with its
+# agent flow on the right. One Jared: a new request goes to the running one.
+# Usage: jared <request file>   (the orchestrator writes the request to .board/jared/<time>.md)
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+req=${1:?request file}; [ -f "$req" ] || { echo "no such file: $req" >&2; exit 1; }
+req="$(cd "$(dirname "$req")" && pwd)/$(basename "$req")"
+[ "${HERDR_ENV:-}" = 1 ] || { echo "run inside Herdr" >&2; exit 1; }
+msg="New task request: $req"
+
+if herdr agent list 2>/dev/null | jq -e '.result.agents[] | select(.name == "jared")' >/dev/null; then
+  herdr agent prompt jared "$msg" >/dev/null && { echo "request sent to the running jared"; exit 0; }
+  echo "jared is busy with a question for the user (Herdr workspace 'jared'): answer it there, then send again" >&2; exit 1
+fi
+
+pane=$(herdr workspace create --cwd "$HUB" --label jared --no-focus | jq -r '.result.root_pane.pane_id')
+right=$(herdr pane split "$pane" --direction right --ratio 0.6 --cwd "$HUB" --no-focus | jq -r '.result.pane.pane_id')
+herdr pane rename "$right" agentes >/dev/null 2>&1 || true
+herdr pane run "$right" "$ENGINE/bin/panel agentes --pane $pane" >/dev/null
+rc=0; "$ENGINE/bin/lib/start-agent" "$pane" jared jared \
+  --plugin-dir "$("$ENGINE/bin/lib/kit-dir")" --agent factory:jared -n jared --settings "$("$ENGINE/bin/lib/kit-settings")" "$msg" || rc=$?
+[ "$rc" = 0 ] && echo "jared started in Herdr workspace 'jared' with $req"
+[ "$rc" != 1 ]

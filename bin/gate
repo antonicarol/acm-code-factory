@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Deterministic gate of a task's repo folders, run by the coordinator after the workers and before any reviewer
+# or tester: does the change pass the repo's checks? The checks come from the hub (workspace.json
+# gate.repos.<repo>.checks, `{base}` → origin/<base>), never from the branch, so a worker can't change what it
+# is judged by. It also lists what can game a check without failing it: existing files under gate.protected
+# (tests, lint/type/test configs) the branch modified or deleted, and added lines that silence a check
+# (eslint-disable, @ts-ignore, .skip/.only). Those don't fail the gate: the reviewer must accept each one.
+# `attention:` lines (gate.attention: migrations, package.json, CI/deploy…) go to result.md and the PR for a person.
+# Usage: gate <task> [repo...]    (default: every repo folder of the task that has a gate config)
+# Exit 0 = every repo PASS, 1 = some FAIL, 2 = usage. Full output: .board/gate/<task>/<repo>.log, summary: <repo>.txt
+set -euo pipefail
+. "$(dirname "$0")/lib/hub.sh"
+task=${1:?usage: gate <task> [repo...]}; shift
+dir="$HUB/.tasks/$task"
+[ -d "$dir" ] || { echo "no task folder $dir" >&2; exit 2; }
+cfg="$HUB/workspace.json"
+out="$HUB/.board/gate/$task"; mkdir -p "$out"
+# One gate per task: a second run (the coordinator retrying after its Bash timeout) truncated the first one's logs
+# and killed its turbo, so both failed. Instead it waits for the running one and returns that result.
+lock="$out/.running"
+if ! mkdir "$lock" 2>/dev/null; then
+  p=$(cat "$lock/pid" 2>/dev/null || true)
+  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+    echo "gate: $task already has a gate running (pid $p): waiting for its result" >&2
+    while kill -0 "$p" 2>/dev/null; do sleep 5; done
+    cat "$out"/*.txt; ! grep -q 'GATE FAIL' "$out"/*.txt; exit
+  fi
+  rm -rf "$lock"; mkdir "$lock"   # its gate died without releasing it
+fi
+echo $$ > "$lock/pid"; trap 'rm -rf "$lock"' EXIT
+protected_pats=$(jq -r '.gate.protected[]?' "$cfg")   # once per run: matched against every changed file
+attention_pats=$(jq -r '.gate.attention // {} | to_entries[] | .key as $k | .value[] | "\($k)\t\(.)"' "$cfg")
+silence='eslint-disable|@ts-ignore|@ts-expect-error|@ts-nocheck|\b(it|test|describe)\.(skip|only)\(|\bx(it|describe)\('
+
+if [ $# -gt 0 ]; then repos=("$@"); else
+  repos=(); for f in "$dir"/*; do n=$(basename "$f"); jq -e --arg r "$n" '.gate.repos[$r]' "$cfg" >/dev/null && repos+=("$n"); done
+fi
+[ ${#repos[@]} -gt 0 ] || { echo "$task: no repo folder with a gate config (workspace.json gate.repos)" >&2; exit 2; }
+
+# Machine-wide turn (every hub): at most GATE_SLOTS gates at once, so parallel tasks don't stack type/lint runs
+# into swap and CPU. Queue for GATE_WAIT s (the Bash call outlives its timeout), then run anyway.       
+slots="${XDG_CACHE_HOME:-$HOME/.cache}/factory/gate-slots"; mkdir -p "$slots"; slot=""; waited=0
+while [ -z "$slot" ]; do
+  for i in $(seq 1 "${GATE_SLOTS:-2}"); do
+    s="$slots/$i"
+    if mkdir "$s" 2>/dev/null; then echo $$ > "$s/pid"; slot=$s; break; fi
+    p=$(cat "$s/pid" 2>/dev/null || true)
+    [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null && rm -rf "$s"   # its gate died without releasing it
+  done
+  [ -n "$slot" ] && break
+  [ "$waited" -ge "${GATE_WAIT:-2400}" ] && { echo "gate: waited ${waited}s for a turn, running anyway" >&2; break; }
+  [ "$waited" -eq 0 ] && echo "gate: waiting for a turn (other gates running)" >&2
+  sleep 5; waited=$((waited+5))
+done
+[ -z "$slot" ] || trap 'rm -rf "$slot" "$lock"' EXIT
+
+fail=0
+for repo in "${repos[@]}"; do
+  f="$dir/$repo"; log="$out/$repo.log"; : > "$log"
+  [ -e "$f/.git" ] || { echo "$repo: not a repo folder of $task" >&2; exit 2; }
+  base=$(jq -r --arg r "$repo" '.gate.repos[$r].base // empty' "$cfg")
+  [ -n "$base" ] || { echo "$repo: no gate config (workspace.json gate.repos.$repo)" >&2; exit 2; }
+  mb=$(git -C "$f" merge-base HEAD "origin/$base")
+  start=$SECONDS; failed=(); n=0
+
+  while IFS= read -r cmd; do
+    n=$((n+1)); cmd=${cmd//\{base\}/origin\/$base}
+    echo "### $cmd" >> "$log"
+    (cd "$f" && bash -c "$cmd") >> "$log" 2>&1 || failed+=("$cmd")
+    echo >> "$log"
+  done < <(jq -r --arg r "$repo" '.gate.repos[$r].checks[]' "$cfg")
+
+  # Existing files (tracked at the merge-base) the task changed or deleted, committed or not; new files are fine.
+  protected=()
+  while IFS=$'\t' read -r st path _; do
+    [[ $st == A* ]] && continue
+    while IFS= read -r pat; do [[ $path == $pat ]] && { protected+=("${st:0:1} $path"); break; }; done <<<"$protected_pats"
+  done < <(git -C "$f" diff --name-status "$mb")
+
+  # Changes a person should look at in the PR, new files included (gate.attention: label → patterns).
+  attention=()
+  while IFS=$'\t' read -r st path; do
+    while IFS=$'\t' read -r label pat; do [[ $path == $pat ]] && { attention+=("$label: ${st:0:1} $path"); break; }; done \
+      <<<"$attention_pats"
+  done < <(git -C "$f" diff --name-status --no-renames "$mb"; git -C "$f" ls-files --others --exclude-standard | sed 's/^/A\t/')
+
+  # Added lines that silence a check: tracked changes since the merge-base, plus untracked files.
+  silenced=$( { git -C "$f" diff -U0 "$mb" | awk '/^\+\+\+ b\//{file=substr($0,7); next} /^\+/{print file":"substr($0,2)}'
+                git -C "$f" ls-files --others --exclude-standard -z | (cd "$f" && xargs -0 grep -HE "$silence" 2>/dev/null || true); } |
+              grep -E "$silence" | cut -c1-200 || true)
+
+  t=$((SECONDS-start)); ok=$((n-${#failed[@]}))
+  if [ ${#failed[@]} -eq 0 ]; then verdict=PASS; else verdict=FAIL; fail=1; fi
+  { echo "$repo: GATE $verdict · checks $ok/$n · ${t}s · log $log"
+    for c in "${failed[@]+"${failed[@]}"}"; do echo "  ✗ $c"; done
+    for p in "${protected[@]+"${protected[@]}"}"; do echo "  protected: $p"; done
+    [ -z "$silenced" ] || sed 's/^/  silenced: /' <<<"$silenced"
+    for a in "${attention[@]+"${attention[@]}"}"; do echo "  attention: $a"; done
+  } | tee "$out/$repo.txt"   # the summary, next to the full log
+done
+exit $fail

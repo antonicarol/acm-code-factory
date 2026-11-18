@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# The Cursor CLI transcript directory of a session id (~/.cursor/projects/*/agent-transcripts/<id>), or nothing.
+# The main conversation is <id>.jsonl; its subagents are subagents/*.jsonl. Cursor does not run the kit hooks
+# and does not write ~/.claude/projects, so pr-watch, sys-watch and factory ctx read this instead.
+sid=${1:-}
+[ -n "$sid" ] && [ "$sid" != - ] || exit 0
+for d in "$HOME"/.cursor/projects/*/agent-transcripts/"$sid"; do
+  [ -d "$d" ] && { echo "$d"; exit 0; }
+done
+exit 0

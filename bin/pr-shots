@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Publishes a PR's UI screenshots to the repo's `pr-screenshots` branch (images only, pr-<n>/<run>/) through the
+# GitHub API: no local checkout and no git push, so the repo's hooks (which build and test code that branch does
+# not have) never get in the way and never get skipped. One commit per image, each with [skip ci].
+# Usage: pr-shots <repo folder> <pr number> <image.png> [...]
+# Prints one `url <file> <raw URL>` line per image, pinned to the last commit (every image is in it).
+set -euo pipefail
+folder=${1:?repo folder}; pr=${2:?pr number}; shift 2
+[ $# -gt 0 ] || { echo "no images" >&2; exit 1; }
+slug=$(cd "$folder" && gh repo view --json nameWithOwner -q .nameWithOwner)
+run=$(date +%Y%m%d-%H%M%S)-$$; branch=pr-screenshots; tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+
+if ! gh api "repos/$slug/branches/$branch" >/dev/null 2>&1; then   # first time: an orphan branch with no files
+  tree=$(gh api "repos/$slug/git/trees" -X POST --input <(echo '{"tree":[{"path":"README.md","mode":"100644","type":"blob","content":"PR screenshots only.\n"}]}') -q .sha)
+  commit=$(gh api "repos/$slug/git/commits" -X POST -f message="chore: pr screenshots branch [skip ci]" -f tree="$tree" -q .sha)
+  gh api "repos/$slug/git/refs" -X POST -f ref="refs/heads/$branch" -f sha="$commit" >/dev/null
+fi
+
+sha=""; names=()
+for f in "$@"; do
+  name=$(basename "$f"); path="pr-$pr/$run/$name"; names+=("$name")
+  base64 -i "$f" | tr -d '\n' | jq -Rs --arg m "chore: screenshots for PR #$pr [skip ci]" --arg b "$branch" \
+    '{message: $m, branch: $b, content: .}' > "$tmp/body.json"
+  # 409 = someone else committed to the branch meanwhile: once more
+  sha=$(gh api -X PUT "repos/$slug/contents/$path" --input "$tmp/body.json" -q .commit.sha 2>/dev/null ||
+        gh api -X PUT "repos/$slug/contents/$path" --input "$tmp/body.json" -q .commit.sha)
+done
+for name in "${names[@]}"; do
+  echo "url $name https://github.com/$slug/blob/$sha/pr-$pr/$run/$name?raw=true"
+done

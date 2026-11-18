@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# My Notion tasks (assigned to me, not done) in tabs: current sprint (its Timeline contains today), next sprint (the
+# first one starting after today), backlog (neither) and dates (tasks in the sprints that overlap a range you pick).
+# Each tab sorted: in progress and review first, then by priority. Pick a task and it goes to the orchestrator.
+# --fetch fills a cache (my tasks + the sprints and their dates) through a tiny `claude -p` (Haiku) with the Notion
+# MCP (~20 s); the tabs are computed locally from it, so switching tab or dates is instant.
+#   inbox            the panel (factory panel notion: 1-4 or tab / shift-tab = tab, ctrl-f = dates, enter = to the
+#                    orchestrator, ctrl-o = open in Notion). Herdr: prefix+i.
+#   inbox --fetch    refresh the cache                    inbox --list   print the current tab from the cache
+#   inbox --send N   send PROJ-N to the orchestrator        inbox --tab next|prev|1-4|<name>   switch tab
+#   inbox --dates    ask for a date range (terminal) and open the dates tab
+. "$(dirname "$0")/lib/hub.sh"
+board="$HUB/.board"; mkdir -p "$board"
+cache="$board/notion-tasks.json"       # [{id, name, status, priority, sp, url, sprints: [page ids]}]
+sprints_cache="$board/notion-sprints.json"   # [{id, name, start, end}] (YYYY-MM-DD)
+tabf="$board/notion-tab"; rangef="$board/notion-range"   # the open tab; "from to" of the dates tab
+tasks=$(jq -r '.notion.tasks' "$HUB/workspace.json"); sprints=$(jq -r '.notion.sprints' "$HUB/workspace.json")
+# Mine: the Notion user is me, or (notion.me, my page in the people database) the Assignee relation has it: tasks
+# created by agents often fill only the relation.
+me=$(jq -r '.notion.me // empty' "$HUB/workspace.json")
+mine='{"type":"property","property":"Assignee Notion user","propertyType":"person","operator":"person_contains","value":{"type":"relative","value":"me"}}'
+[ -n "$me" ] && mine='{"type":"group","operator":"or","filters":['"$mine"',{"type":"property","property":"Assignee","propertyType":"relation","operator":"relation_contains","value":{"type":"exact","value":"'"$me"'"}}]}'
+TABS=(sprint next backlog dates)
+
+fetch(){
+  local out l f
+  # Haiku only makes the two calls; the rows are parsed from its raw tool results (when it rewrote them as JSON it
+  # sometimes dropped every task's Sprints and all tasks fell into the backlog). Sprint rows have a Timeline.
+  out=$(cd "$board" && claude -p --model haiku --settings '{"env":{"CLAUDE_CODE_PLUGIN_DIRS":""}}' \
+    --allowedTools 'mcp__notion__notion-query-data-sources' --output-format stream-json --verbose \
+    "Call notion-query-data-sources twice. First with exactly this argument: {\"data\":{\"mode\":\"rows\",\"data_source_url\":\"$sprints\",\"filter\":{\"type\":\"group\",\"operator\":\"and\",\"filters\":[{\"type\":\"property\",\"property\":\"Timeline\",\"propertyType\":\"date\",\"operator\":\"date_is_on_or_after\",\"use_end\":true,\"value\":{\"type\":\"relative\",\"value\":\"one_month_ago\"}}]},\"sort\":[{\"property\":\"Timeline\",\"direction\":\"ascending\"}],\"limit\":30}}. Then with exactly this argument: {\"data\":{\"mode\":\"rows\",\"data_source_url\":\"$tasks\",\"filter\":{\"type\":\"group\",\"operator\":\"and\",\"filters\":[$mine,{\"type\":\"property\",\"property\":\"Status\",\"propertyType\":\"status\",\"operator\":\"status_is\",\"value\":[{\"type\":\"is_option\",\"value\":\"Not started\"},{\"type\":\"is_option\",\"value\":\"In progress\"},{\"type\":\"is_option\",\"value\":\"Blocked\"},{\"type\":\"is_option\",\"value\":\"Review\"}]}]},\"limit\":100}}. Then reply OK." \
+    </dev/null 2>/dev/null | jq -r 'select(.type == "user") | .message.content[]? | select(.type == "tool_result")
+      | .content | if type == "string" then . else (.[]? | select(.type == "text") | .text) end' |
+    # a big result (all the columns of 100 rows) comes back as "Output has been saved to <file>": read that file
+    while IFS= read -r l; do case $l in
+      ('{'*) printf '%s\n' "$l" ;;
+      (*"saved to /"*) f=$(grep -o 'saved to /[^ ]*\.txt' <<<"$l"); cat "${f#saved to }"; echo ;;
+    esac; done | jq -s '[.[] | objects | .results[]?]')
+  # keep the previous cache unless both queries came back; page urls -> their last 32 hex digits
+  jq -e 'any(.[]; has("date:Timeline:start")) and any(.[]; has("userDefined:Id"))' <<<"$out" >/dev/null 2>&1 || return 0
+  local pid='def pid: gsub("-"; "") | .[-32:]; def unesc: gsub("\\\\(?<c>.)"; .c);'
+  jq "$pid"' [.[] | select(has("date:Timeline:start")) | {id: (.url | pid), name: (.Name | unesc),
+    start: .["date:Timeline:start"][:10], end: ((.["date:Timeline:end"] // .["date:Timeline:start"])[:10])}]' \
+    <<<"$out" > "$sprints_cache.tmp" &&
+  jq "$pid"' [.[] | select(has("userDefined:Id")) | {id: (.["userDefined:Id"] | tonumber? // .), name: (.Name | unesc),
+    status: .Status, priority: .Priority, sp: .SPs, url, sprints: ((.Sprints // "[]") | fromjson? // [] | map(pid))}]' \
+    <<<"$out" > "$cache.tmp" &&
+  mv "$sprints_cache.tmp" "$sprints_cache" && mv "$cache.tmp" "$cache"
+}
+
+tab(){ local t; t=$(cat "$tabf" 2>/dev/null); [[ " ${TABS[*]} " == *" $t "* ]] && echo "$t" || echo sprint; }
+set_tab(){
+  local cur i n=${#TABS[@]}; cur=$(tab)
+  for i in "${!TABS[@]}"; do [ "${TABS[$i]}" = "$cur" ] && break; done
+  case $1 in next) echo "${TABS[$(( (i + 1) % n ))]}" ;; prev) echo "${TABS[$(( (i + n - 1) % n ))]}" ;; *) echo "$1" ;; esac > "$tabf"
+}
+
+# Day as YYYY-MM-DD from 2026-11-09, 09-11-26, 09/11/2026 or 09-11 (this year); nothing if it is not a date.
+day(){
+  local d=${1//\//-} f
+  for f in %Y-%m-%d %d-%m-%Y %d-%m-%y; do date -j -f "$f" "$d" +%F 2>/dev/null && return; done
+  date -j -f %d-%m-%Y "$d-$(date +%Y)" +%F 2>/dev/null
+}
+dates(){
+  local a b from to
+  read -rp "  from (09-11, 09-11-26 or 2026-11-09): " a; from=$(day "$a")
+  [ -n "$from" ] || { echo "  \"$a\" is not a date"; return; }
+  read -rp "  to (enter: the same day): " b; to=$(day "${b:-$a}")
+  [ -n "$to" ] || { echo "  \"$b\" is not a date"; return; }
+  [[ "$to" < "$from" ]] && { a=$from; from=$to; to=$a; }
+  echo "$from $to" > "$rangef"; set_tab dates
+}
+
+# The tab bar and a line about the open tab (rows with key "tabs"), then its tasks: "<id>\t<shown>".
+list(){
+  [ -s "$cache" ] && [ -s "$sprints_cache" ] || { echo "0	(no data: ctrl-r to load from Notion)"; return; }
+  local running range; running=$(ls "$HUB/.tasks" "$HUB/openspec/changes" 2>/dev/null | grep -oiE '^proj-[0-9]+' | tr 'a-z' 'A-Z' | sort -u)
+  range=$(cat "$rangef" 2>/dev/null)
+  jq -r --arg today "$(date +%F)" --arg tab "$(tab)" --arg from "${range% *}" --arg to "${range#* }" \
+     --slurpfile s "$sprints_cache" '
+    def dm: "\(.[8:10])-\(.[5:7])";
+    ($s[0] | map(select(.start <= $today and .end >= $today)) | first // null) as $cur
+    | ($s[0] | map(select(.start > $today)) | sort_by(.start) | first // null) as $next
+    | ($s[0] | if $from == "" then [] else map(select(.start <= $to and .end >= $from) | .id) end) as $in_range
+    | def sec: (.sprints) as $t
+        | { sprint: ($cur != null and ($t | index($cur.id)) != null),
+            next: ($next != null and ($t | index($next.id)) != null),
+            dates: ($t | any(. as $x | $in_range | index($x) != null)) }
+        | .backlog = (.sprint or .next | not);
+      (map(sec)) as $secs
+    | { sprint: "Current", next: "Next", backlog: "Backlog",
+        dates: (if $from == "" then "Dates" else "\($from | dm) → \($to | dm)" end) } as $label
+    | {sprint: "4", next: "5", backlog: "3", dates: "6"} as $color   # blue, magenta, yellow, cyan, in the terminal theme
+    | ({sprint: $cur, next: $next}[$tab] // null) as $sp
+    | [to_entries[] | select($secs[.key][$tab]) | .value] as $shown
+    # Tab bar: "1 Actual 12": the open tab a block of its color, the rest its number in color and the label dimmed.
+    | "tabs\t" + ([ ["sprint", "next", "backlog", "dates"] | to_entries[] | .value as $k | "\(.key + 1)" as $i
+          | ($secs | map(select(.[$k])) | length) as $n
+          | if $k == $tab then "\u001b[1;30;4\($color[$k])m \($i) \($label[$k]) \u001b[22m\($n) \u001b[0m"
+            else " \u001b[1;3\($color[$k])m\($i)\u001b[0m \($label[$k]) \u001b[2m\($n)\u001b[0m " end ]
+        | join("  ")),
+      "tabs\t \u001b[3\($color[$tab])m▎\u001b[0m\u001b[2m" + (if $sp then $sp.name elif $tab == "dates" then "sprints between those dates" else "no current or next sprint" end)
+        + " · \($shown | length) tasks · \([$shown[].sp // 0] | add // 0) SP\u001b[0m",
+      (if $tab == "dates" and $from == "" then "0\t  \u001b[2mctrl-f to pick the dates\u001b[0m" else empty end),
+      ($shown[]
+        | [ .id, (.priority // "-"), .status, (.name | gsub("\\\\"; "")), (.sp // "-") ] | @tsv)' "$cache" |
+  awk -F'\t' -v run="$(echo $running)" '
+    BEGIN { split(run, r, " "); for (i in r) busy[r[i]]=1
+            p["High"]=0; p["Medium"]=1; p["Low"]=2; p["-"]=3
+            s["In progress"]=0; s["Review"]=1; s["Not started"]=2; s["Blocked"]=3   # in progress and review first, the rest by priority
+            pc["High"]="\033[31m▲ High  "; pc["Medium"]="\033[33m■ Medium"; pc["Low"]="\033[32m▼ Low   "; pc["-"]="\033[2m  -     " }
+    NF == 2 { printf "0\t%s\t%s\n", $1, $2; next }   # tab bar / hint: first
+    { mark = busy["PROJ-" $1] ? "\033[33m◐\033[0m" : " "
+      st = ($3=="In progress" || $3=="Review") ? "\033[34m" : ($3=="Blocked" ? "\033[2m" : "\033[0m")
+      printf "1%d%d%d%06d\t%s\t%s %s\033[0m  %3s SP  %s%-11s\033[0m  PROJ-%s  %s\n", (s[$3] < 2 ? s[$3] : 2), p[$2], s[$3], $1, $1, mark, pc[$2], $5, st, $3, $1, $4 }' |
+  sort -s -t$'\t' -k1,1 | cut -f2-
+}
+
+send(){
+  local id=$1 url pane st
+  [ "$id" = tabs ] && { set_tab next; return; }   # enter on the tab bar: next tab
+  [ "$id" -gt 0 ] 2>/dev/null || { echo "nothing to send"; return; }
+  url=$(jq -r --argjson i "$id" '.[] | select(.id == $i) | .url' "$cache")
+  [ "${HERDR_ENV:-}" = 1 ] || { echo "open the inbox inside Herdr to send"; return; }
+  read -r pane st < <(orch_pane)
+  [ -n "$pane" ] || { echo "no orchestrator running (factory claude-kit orchestrator -n orchestrator)"; return; }
+  [ "$st" = blocked ] && { echo "the orchestrator is waiting for an answer: reply to it first (ctrl+b a)"; return; }
+  herdr agent prompt "$pane" "Work on PROJ-$id: $url" >/dev/null 2>&1 \
+    && echo "PROJ-$id sent to the orchestrator ($( [ "$st" = working ] && echo 'queued behind what it is doing' || echo 'starts now'))" \
+    || echo "could not send PROJ-$id (herdr agent prompt failed)"
+}
+
+case "${1:-}" in
+  --fetch) fetch; exit ;;
+  --list)  list; exit ;;
+  --send)  send "$2"; exit ;;
+  --tab)   case ${2:-next} in [1-4]) set_tab "${TABS[$(( $2 - 1 ))]}" ;; *) set_tab "${2:-next}" ;; esac; exit ;;
+  --dates) dates; exit ;;
+esac
+exec "$ENGINE/bin/panel" notion   # the interactive list: panels/notion.sh

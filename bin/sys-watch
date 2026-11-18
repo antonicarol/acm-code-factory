@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Keeps the machine usable while agents work. Every minute it:
+#   - kills what is dead for sure: test workers left without their runner (kit/hooks/reap-tests.sh), and
+#     workspace processes (path under the hub's parent folder) that run from a task folder that no longer exists
+#     (.tasks/<task>/ removed by task-end) or that were orphaned mid-run (vue-tsc, eslint, tsc, vitest/jest runners);
+#   - stops a task's dev servers (factory task-servers) once its .tasks/<task>/ folder is gone;
+#   - notifies (macOS notification, once per spell) when the kernel reports memory pressure, with the top consumers, or when a
+#     workspace process burns CPU for $CPU_MINUTES minutes in a row;
+#   - notifies (once per spell) when a task's coordinator shows as working in Herdr but neither its transcript nor
+#     its subagents' have changed for $STUCK_MINUTES minutes (Claude's transcript, or the Cursor CLI's): stuck on a
+#     hung command, a lost subagent or a prompt.
+#   - notifies when the account's 5 h or 7 d rate-limit window passes 80 %, 95 % and 100 % (once per window and
+#     threshold; from 95 % new coordinators start on Cursor on their own, at 100 % the window is spent, and once
+#     it resets the tasks come back to Claude — or, if the provider was switched by hand, how to switch it back),
+#     from what the kit sessions' status line records (factory usage).
+# What it did goes to .board/sys-watch.log. Started by `factory claude-kit orchestrator` (one instance).
+# `sys-watch --once` checks once and exits.
+. "$(dirname "$0")/lib/hub.sh"; ROOT=$(dirname "$HUB")
+state="$HUB/.board/sys-watch"; mkdir -p "$state"
+CPU_PCT=${CPU_PCT:-90}; CPU_MINUTES=${CPU_MINUTES:-10}
+STUCK_MINUTES=${STUCK_MINUTES:-20}   # above the longest quiet step (a full gate or e2e run writes nothing until it ends)
+
+if [ "${1:-}" != --once ]; then
+  [ -f "$state/pid" ] && ps -p "$(cat "$state/pid")" -o command= 2>/dev/null | grep -q sys-watch && exit 0
+  echo $$ > "$state/pid"; trap 'rm -f "$state/pid"' EXIT
+fi
+
+log(){ echo "$(date '+%F %T') $*"; }
+notify(){ osascript -e "display notification \"$2\" with title \"factory · $1\"" >/dev/null 2>&1; log "aviso: $1 — $2"; }
+mb(){ ps -o rss= -p "$1" 2>/dev/null | awk '{printf "%d MB", $1/1024}'; }
+
+reap(){
+  echo '{}' | "$ENGINE/kit/hooks/reap-tests.sh"
+  while read -r pid ppid _ cmd; do
+    case "$cmd" in *"$ROOT"/*) ;; *) continue ;; esac
+    why=""
+    task=$(grep -oE '/\.tasks/[^/ ]+' <<<"$cmd" | head -1)
+    [ -n "$task" ] && [ ! -d "$HUB$task" ] && why="its task ${task#/.tasks/} no longer exists"
+    [ -z "$why" ] && [ "$ppid" = 1 ] && grep -qE 'vue-tsc|/eslint/bin/|/typescript/bin/tsc|/vitest/vitest\.mjs|/bin/jest( |$)' <<<"$cmd" && why="orphaned"
+    [ -n "$why" ] && { log "kill $pid ($(mb "$pid"), $why): ${cmd:0:140}"; [ -n "${DRY:-}" ] || kill "$pid" 2>/dev/null; }
+  done <<<"$procs"
+  for f in "$HUB"/.board/servers/*.pid; do
+    [ -f "$f" ] || continue; t=$(basename "$f" .pid)
+    [ -d "$HUB/.tasks/$t" ] || { log "task-servers $t stop (task closed)"; "$HUB/bin/task-servers" "$t" stop >/dev/null 2>&1; }
+  done
+}
+
+# The kernel's pressure level (1 normal, 2 warn, 4 critical), not swap %: macOS rarely shrinks swap, so a swap
+# threshold stays crossed for days and the spell never ends.
+memory(){
+  local level top
+  level=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || echo 1)
+  if [ "$level" -ge 2 ]; then
+    [ -e "$state/mem" ] && return
+    top=$(top -l 1 -o mem -n 3 -stats mem,command 2>/dev/null | awk '/^MEM/{f=1;next} f{printf "%s%s %s", (n++ ? ", " : ""), $2, $1}')
+    notify "memory" "Memory pressure $([ "$level" -ge 4 ] && echo critical || echo high). Top consumers: $top" && touch "$state/mem"
+  else
+    rm -f "$state/mem"
+  fi
+}
+
+# A workspace process over CPU_PCT counts one minute; CPU_MINUTES in a row → one notification per pid.
+cpu(){
+  local seen=" "
+  while read -r pid _ c cmd; do
+    case "$cmd" in *"$ROOT"/*) ;; *) continue ;; esac
+    awk -v c="$c" -v m="$CPU_PCT" 'BEGIN { exit !(c >= m) }' || continue
+    seen+="$pid "; n=$(( $(cat "$state/cpu.$pid" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$state/cpu.$pid"
+    [ "$n" -eq "$CPU_MINUTES" ] && notify "CPU" "PID $pid lleva ${CPU_MINUTES} min al ${c}%: $(basename "${cmd%% *}") ${cmd:0:80}"
+  done <<<"$procs"
+  for f in "$state"/cpu.*; do [ -f "$f" ] && [[ "$seen" != *" ${f##*.} "* ]] && rm -f "$f"; done
+}
+
+# Coordinators (agents whose cwd is a task folder) working with no transcript written for STUCK_MINUTES.
+# Rate limits: each window over a threshold notifies once; the mark holds the window's resets_at, so a new window
+# notifies again.
+usage(){
+  local f="${XDG_CACHE_HOME:-$HOME/.cache}/factory/usage.json" w pct reset t name
+  [ -f "$f" ] || return 0
+  for w in five_hour seven_day; do
+    read -r pct reset < <(jq -r --arg w "$w" '.[$w] // {} | "\(.used_percentage // 0 | floor) \(.resets_at // 0)"' "$f")
+    [ "${reset:-0}" -gt "$(date +%s)" ] || continue
+    for t in 100 95 80; do
+      [ "$pct" -ge "$t" ] || continue
+      [ "$(cat "$state/usage.$w.$t" 2>/dev/null)" = "$reset" ] && break
+      name=$([ "$w" = five_hour ] && echo "5 h" || echo "weekly"); at=$(date -r "$reset" '+%m/%d at %H:%M')
+      if [ "$t" = 100 ]; then   # spent: tasks already start on Cursor; the reset time is when they come back
+        notify "Claude exhausted" "The $name window is spent until $at. New tasks start their coordinator on Cursor; the orchestrator stays on Claude." &&
+          echo "$reset" > "$state/usage.$w.$t" && echo "$reset" > "$state/usage.out"
+      elif [ "$t" = 95 ]; then
+        notify "Claude usage" "The $name window is at ${pct}% (resets $at). New tasks start their coordinator on Cursor; the orchestrator stays on Claude." &&
+          echo "$reset" > "$state/usage.$w.$t"
+      else notify "Claude usage" "The $name window is at ${pct}%: resets $at." && echo "$reset" > "$state/usage.$w.$t"; fi
+      break
+    done
+  done
+  # Claude was out and its window has reset: tasks go back to Claude on their own, unless the provider was switched by hand.
+  if [ -f "$state/usage.out" ] && [ "$(date +%s)" -ge "$(cat "$state/usage.out")" ]; then
+    if [ "$("$ENGINE/bin/lib/provider")" = claude ]; then
+      notify "Claude available" "Its window has reset. New tasks start their coordinator on Claude again."
+    else
+      notify "Claude available" "Its window has reset. To switch back: factory provider claude."
+    fi
+    rm -f "$state/usage.out"
+  fi
+}
+
+# 0 when the transcript is quiet (nothing written for STUCK_MINUTES): the caller warns.
+# 1 when it changed recently, or there is no transcript to judge.
+quiet(){
+  local cwd=$1 sid=$2 dir
+  dir="$HOME/.claude/projects/$(sed 's/[^A-Za-z0-9]/-/g' <<<"$cwd")"
+  if [ -f "$dir/$sid.jsonl" ]; then
+    [ -n "$(find "$dir/$sid.jsonl" "$dir/$sid" -name '*.jsonl' -mmin -"$STUCK_MINUTES" 2>/dev/null | head -1)" ] && return 1
+    return 0
+  fi
+  dir=$("$ENGINE/bin/lib/cursor-session" "$sid")
+  [ -n "$dir" ] || return 1
+  [ -n "$(find "$dir/$sid.jsonl" "$dir/subagents" -name '*.jsonl' -mmin -"$STUCK_MINUTES" 2>/dev/null | head -1)" ] && return 1
+  return 0
+}
+stuck(){
+  local pane st cwd sid task seen=" "
+  while read -r pane st cwd sid; do
+    task=${cwd#"$HUB"/.tasks/}; seen+="$task "
+    if [ "$st" != working ] || [ "$sid" = - ] || ! quiet "$cwd" "$sid"; then
+      rm -f "$state/stuck.$task"; continue
+    fi
+    [ -e "$state/stuck.$task" ] && continue
+    notify "task stuck" "$task: its coordinator has been working for ${STUCK_MINUTES} min without progress (neither it nor its subagents). Check its pane ($pane)." && touch "$state/stuck.$task"
+  done < <(herdr agent list 2>/dev/null | jq -r --arg t "$HUB/.tasks/" '.result.agents[] | select(.cwd | startswith($t))
+             | select(.cwd | ltrimstr($t) | contains("/") | not) | "\(.pane_id) \(.agent_status) \(.cwd) \(.agent_session.value // "-")"')
+  for f in "$state"/stuck.*; do [ -f "$f" ] && [[ "$seen" != *" ${f#"$state"/stuck.} "* ]] && rm -f "$f"; done
+}
+
+while :; do
+  procs=$(ps -axo pid=,ppid=,%cpu=,command=)   # one snapshot a minute for reap and cpu
+  reap; memory; cpu; stuck; usage
+  [ "${1:-}" = --once ] && exit 0
+  sleep 60
+done

@@ -1,0 +1,10 @@
+# Repos live inside the hub (links to their checkout) but each has its own git: add one line per repo.
+# /<repo>
+
+# Factory state (generated; never edit by hand)
+/.tasks/
+/.board/
+/audits/
+/personal/
+.DS_Store
+.claude/settings.local.json
