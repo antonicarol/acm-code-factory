@@ -79,12 +79,22 @@ The template ships: `tiny` haiku/sonnet medium, `low` sonnet/sonnet medium, `med
 
 **Example:** `localDb: { "project": "<your compose project>", "mysql": "mysql", "mongo": "mongodb", "notes": "one DB per service…" }`.
 
+## `tracker` (task manager, optional)
+
+The tracker is pluggable: see [`trackers/README.md`](../trackers/README.md). Without `tracker` or `notion` there is no tracker: requests go through `factory task` and the orchestrator offers to note them in `BACKLOG.md`.
+
+| Key | Values | Read by | Effect |
+|---|---|---|---|
+| `tracker.type` | adapter name (`notion` ships with the engine) | orchestrator | Which `trackers/<type>/TRACKER.md` it loads (the hub's own `<hub>/trackers/<type>/` wins). Default `notion` if the hub has a `notion` key |
+| `tracker.<anything else>` | free-form | the adapter | Settings the adapter's `TRACKER.md` reads (status map, order, project keys…) |
+
 ## `notion` (task manager, optional)
 
 Without the `notion` key there is no task manager: no `notion` panel, no Jared or task-creator; pr-watch does not ask to move statuses and the orchestrator offers to write requests down in `BACKLOG.md`. With it, the factory uses Notion as its task-manager adapter. Its prompts and scripts still assume a specific ticket format (ids like `PROJ-123`, a given tasks database): generalizing it is pending ([limits](33-limites.md)).
 
 | Key | Values | Read by | Effect |
 |---|---|---|---|
+| `notion.idPrefix` | ticket prefix, e.g. `PROJ` | inbox, notion-page | Tickets are `<idPrefix>-<n>` (default `PROJ`) |
 | `notion.tasks` | `collection://…` | orchestrator, inbox, notion-page, task-creator | Tasks database |
 | `notion.idProperty` · `notion.statusProperty` | property names | orchestrator, notion-page | How to find a ticket by its number and which property to move |
 | `notion.status` | `started` · `pr` · `merged` → value | orchestrator | Statuses it moves to |

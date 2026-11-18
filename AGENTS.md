@@ -15,8 +15,8 @@ Start with [docs/README.md](docs/README.md) (`factory docs` opens the docs as a 
 
 Here, only what is true for any project. A project's own things go in its hub, never in the engine:
 
-- `workspace.json`: `repos` (roles `ui`/`api`/`infra`, `base`, `setup`, `taskServers`), `gate`, `servers`, `panels`, `routing`, `agents.<agent>` (`skills`, `tools`, `notes`, experimental `codeMode`), `notion` (optional).
-- `<hub>/bin/<command>`: the hub's own commands. `<hub>/.claude/skills/`: its own skills (they load in `.tasks/<task>/` sessions too).
+- `workspace.json`: `repos` (roles `ui`/`api`/`infra`, `base`, `setup`, `taskServers`), `gate`, `servers`, `panels`, `routing`, `agents.<agent>` (`skills`, `tools`, `notes`, experimental `codeMode`), `tracker` / `notion` (optional; see `trackers/README.md`).
+- `<hub>/trackers/<type>/TRACKER.md`: the hub's own task-tracker adapter. `<hub>/panels/<name>.sh`: its own panels. `<hub>/bin/<command>`: its own commands. `<hub>/.claude/skills/`: its own skills (they load in `.tasks/<task>/` sessions too).
 - The hub's `AGENTS.md`, `context/`, `testing/`, `learnings/`, `decisions/`, `openspec/`.
 
 If a project needs something the engine cannot configure, add the configuration point here; do not write the specific case. A new prompt or script never names a project's repos, branches, tickets or services: it says "the repo with role `ui`", "`repos.<repo>.base`", "`<ticket>`".

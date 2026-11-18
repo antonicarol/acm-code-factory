@@ -7,13 +7,14 @@
 #   inbox            the panel (factory panel notion: 1-4 or tab / shift-tab = tab, ctrl-f = dates, enter = to the
 #                    orchestrator, ctrl-o = open in Notion). Herdr: prefix+i.
 #   inbox --fetch    refresh the cache                    inbox --list   print the current tab from the cache
-#   inbox --send N   send PROJ-N to the orchestrator        inbox --tab next|prev|1-4|<name>   switch tab
+#   inbox --send N   send <prefix>-N to the orchestrator        inbox --tab next|prev|1-4|<name>   switch tab
 #   inbox --dates    ask for a date range (terminal) and open the dates tab
 . "$(dirname "$0")/lib/hub.sh"
 board="$HUB/.board"; mkdir -p "$board"
 cache="$board/notion-tasks.json"       # [{id, name, status, priority, sp, url, sprints: [page ids]}]
 sprints_cache="$board/notion-sprints.json"   # [{id, name, start, end}] (YYYY-MM-DD)
 tabf="$board/notion-tab"; rangef="$board/notion-range"   # the open tab; "from to" of the dates tab
+pfx=$(jq -r '.notion.idPrefix // "PROJ"' "$HUB/workspace.json")   # ticket prefix: PROJ-123
 tasks=$(jq -r '.notion.tasks' "$HUB/workspace.json"); sprints=$(jq -r '.notion.sprints' "$HUB/workspace.json")
 # Mine: the Notion user is me, or (notion.me, my page in the people database) the Assignee relation has it: tasks
 # created by agents often fill only the relation.
@@ -74,7 +75,7 @@ dates(){
 # The tab bar and a line about the open tab (rows with key "tabs"), then its tasks: "<id>\t<shown>".
 list(){
   [ -s "$cache" ] && [ -s "$sprints_cache" ] || { echo "0	(no data: ctrl-r to load from Notion)"; return; }
-  local running range; running=$(ls "$HUB/.tasks" "$HUB/openspec/changes" 2>/dev/null | grep -oiE '^proj-[0-9]+' | tr 'a-z' 'A-Z' | sort -u)
+  local running range; running=$(ls "$HUB/.tasks" "$HUB/openspec/changes" 2>/dev/null | grep -oiE "^$pfx-[0-9]+" | tr 'a-z' 'A-Z' | sort -u)
   range=$(cat "$rangef" 2>/dev/null)
   jq -r --arg today "$(date +%F)" --arg tab "$(tab)" --arg from "${range% *}" --arg to "${range#* }" \
      --slurpfile s "$sprints_cache" '
@@ -104,15 +105,15 @@ list(){
       (if $tab == "dates" and $from == "" then "0\t  \u001b[2mctrl-f to pick the dates\u001b[0m" else empty end),
       ($shown[]
         | [ .id, (.priority // "-"), .status, (.name | gsub("\\\\"; "")), (.sp // "-") ] | @tsv)' "$cache" |
-  awk -F'\t' -v run="$(echo $running)" '
+  awk -F'\t' -v run="$(echo $running)" -v pfx="$pfx" '
     BEGIN { split(run, r, " "); for (i in r) busy[r[i]]=1
             p["High"]=0; p["Medium"]=1; p["Low"]=2; p["-"]=3
             s["In progress"]=0; s["Review"]=1; s["Not started"]=2; s["Blocked"]=3   # in progress and review first, the rest by priority
             pc["High"]="\033[31m▲ High  "; pc["Medium"]="\033[33m■ Medium"; pc["Low"]="\033[32m▼ Low   "; pc["-"]="\033[2m  -     " }
     NF == 2 { printf "0\t%s\t%s\n", $1, $2; next }   # tab bar / hint: first
-    { mark = busy["PROJ-" $1] ? "\033[33m◐\033[0m" : " "
+    { mark = busy[pfx "-" $1] ? "\033[33m◐\033[0m" : " "
       st = ($3=="In progress" || $3=="Review") ? "\033[34m" : ($3=="Blocked" ? "\033[2m" : "\033[0m")
-      printf "1%d%d%d%06d\t%s\t%s %s\033[0m  %3s SP  %s%-11s\033[0m  PROJ-%s  %s\n", (s[$3] < 2 ? s[$3] : 2), p[$2], s[$3], $1, $1, mark, pc[$2], $5, st, $3, $1, $4 }' |
+      printf "1%d%d%d%06d\t%s\t%s %s\033[0m  %3s SP  %s%-11s\033[0m  %s-%s  %s\n", (s[$3] < 2 ? s[$3] : 2), p[$2], s[$3], $1, $1, mark, pc[$2], $5, st, $3, pfx, $1, $4 }' |
   sort -s -t$'\t' -k1,1 | cut -f2-
 }
 
@@ -125,9 +126,9 @@ send(){
   read -r pane st < <(orch_pane)
   [ -n "$pane" ] || { echo "no orchestrator running (factory claude-kit orchestrator -n orchestrator)"; return; }
   [ "$st" = blocked ] && { echo "the orchestrator is waiting for an answer: reply to it first (ctrl+b a)"; return; }
-  herdr agent prompt "$pane" "Work on PROJ-$id: $url" >/dev/null 2>&1 \
-    && echo "PROJ-$id sent to the orchestrator ($( [ "$st" = working ] && echo 'queued behind what it is doing' || echo 'starts now'))" \
-    || echo "could not send PROJ-$id (herdr agent prompt failed)"
+  herdr agent prompt "$pane" "Work on $pfx-$id: $url" >/dev/null 2>&1 \
+    && echo "$pfx-$id sent to the orchestrator ($( [ "$st" = working ] && echo 'queued behind what it is doing' || echo 'starts now'))" \
+    || echo "could not send $pfx-$id (herdr agent prompt failed)"
 }
 
 case "${1:-}" in

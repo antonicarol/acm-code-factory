@@ -17,7 +17,7 @@ Result: `audits/<repo>/<date>-<types>/REPORT.md` (in the user's language, priori
 
 ## Task manager: Jared and task-creator
 
-The task manager is optional. Without a `notion` key in `workspace.json`, tasks come in through the chat or `factory task`, and the orchestrator offers to jot ideas down in `BACKLOG.md`. With it, Notion is the task-manager adapter: the orchestrator reads tickets (`factory notion-page`) and moves their status, the `notion` panel lists your tasks and Jared creates new tasks. This adapter's prompts and scripts (orchestrator § Notion, Jared, task-creator, `tech-task-creator`, `inbox`, `notion-page`) still assume a specific ticket format and task database; they will be generalized when another hub uses Notion. Another task manager (Linear…) would be another source that writes to `.board/inbox/`.
+The task manager is optional and pluggable. Without `tracker` or `notion` in `workspace.json`, tasks come in through the chat or `factory task`, and the orchestrator offers to jot ideas down in `BACKLOG.md`. With one, the orchestrator loads that tracker's adapter (`trackers/<type>/TRACKER.md`, see [`trackers/README.md`](../trackers/README.md)) to read tickets and move their status. Notion is the adapter that ships: `factory notion-page` reads tickets, the `notion` panel lists your tasks, and Jared creates new ones. Another tracker (Linear, Jira, GitHub Issues…) is a `TRACKER.md` with four operations, written in your hub; it can also just write to `.board/inbox/`.
 
 **Jared** (Sonnet, workspace `jared`) is the task-creation coordinator, separate from the orchestrator so you can talk to him on his own. The orchestrator hands him requests (`.board/jared/<date>.md` + `factory jared`).
 

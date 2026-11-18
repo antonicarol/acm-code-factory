@@ -5,7 +5,7 @@ State as of 2026-11-01. When one is fixed, it is removed from here. The engine's
 ## Engine
 
 - **Little mileage outside its original projects.** Since the engine was split from the hub (2026-10-30), full tasks have run end to end: spec, ui-designer, worktree with its own servers, gate, on-screen test, PR and review. Missing: a project with a different stack and a task with `ui` and `api` at the same time.
-- **The Notion adapter assumes a specific setup.** It works through config (`notion.*`), but its prompts and `bin/inbox` / `bin/notion-page` assume ids like `PROJ-123`, a given tasks database and the `notion` MCP; `pr-watch` notices name its statuses (`Review`, `To test`).
+- **The Notion adapter assumes a specific setup.** The tracker is pluggable (`tracker.type`, [`trackers/README.md`](../trackers/README.md)), but Notion's pieces (the `notion` panel, `bin/inbox`, `bin/notion-page`, Jared, `task-creator`, `tech-task-creator`) assume a tasks database with `Status`, `Priority`, `SPs` and `Assignee` properties, ticket ids like `<idPrefix>-<n>` (`notion.idPrefix`) and the `notion` MCP. Another tracker gets the four operations of its `TRACKER.md` (read a ticket, read a status, list pending work, move a status); it has no panel or creator agent unless the hub adds them.
 - **Prompts with stack assumptions.** Prompts no longer name any project's stack; what is specific to each hub goes in its `AGENTS.md`, guides, commands and skills (for example a hub's own `task-servers` and `docker`). The Notion adapter is the remaining exception (above).
 - **A kit change does not reach running sessions**: you have to restart them (and `factory hub-panel --replace` for the panels).
 

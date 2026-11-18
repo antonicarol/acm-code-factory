@@ -50,13 +50,21 @@ An example hub configuration is in [`examples/web-app/`](examples/web-app/). The
 | **Reference** | [Tools](docs/30-herramientas.md) · [Configuration](docs/31-configuracion.md) · [Agents](docs/32-agentes.md) · [Known limits](docs/33-limites.md) |
 | **Guide** | [Best practices](docs/34-best-practices.md): safety, verification, short instructions, Code Mode |
 
+## Make it yours
+
+The skeleton is the agents, the kit, the gate, OpenSpec and the worktrees. The rest is replaceable:
+
+- **Task tracker:** none, Notion (shipped) or your own adapter, a `TRACKER.md` with four operations: [`trackers/README.md`](trackers/README.md).
+- **Panels:** each panel is a shell script that prints rows; add yours in `<hub>/panels/<name>.sh` and list it in `panels.hub`: [`panels/README.md`](panels/README.md).
+- **Terminal runtime:** Herdr today. Making it swappable is on the [roadmap](#roadmap).
+
 ## A note on safety
 
 Agents run commands and open PRs on your behalf. Read [Best practices](docs/34-best-practices.md#safety-what-is-enforced-and-what-is-a-request) before pointing it at anything you cannot restore. The kit ships `deny` rules that stop agents reading `.env*` files; a prompt alone is not a guarantee, and `deny` rules do not stop a script an agent runs from opening a file. Try changes to the engine in a throwaway hub (`factory hub-init`), never in a live one.
 
 ## Roadmap
 
-Ideas, in rough order: a web dashboard of tasks and agents (`factory dash` draws the agent tree today), sessions on other machines over SSH, and any agent CLI as a provider (Codex, Gemini, OpenCode…).
+Ideas, in rough order: a swappable terminal runtime (so Herdr is optional), a web dashboard of tasks and agents (`factory dash` draws the agent tree today), sessions on other machines over SSH, and any agent CLI as a provider (Codex, Gemini, OpenCode…).
 
 ## Contributing
 

@@ -20,7 +20,7 @@ fi
 
 # Prompts the orchestrator (or, with a 2nd arg "<ticket>", that task's coordinator, found by its title); fails (so we retry next round)
 # if it is missing or waiting on the user.
-notion=$(jq -r 'if .notion then "1" else "" end' "$HUB/workspace.json")   # no tracker → no status moves to ask for
+tracker=$(jq -r 'if .tracker or .notion then "1" else "" end' "$HUB/workspace.json")   # no tracker → no status moves to ask for
 notify(){
   local pane st cwd sid who=${2:-}
   if [ -z "$who" ]; then read -r pane st < <(orch_pane)
@@ -153,11 +153,11 @@ check(){
   fi
   if [ "$merged" -eq "$n" ] && [ ! -e "$state/$task.merged" ]; then
     to_coord "$task" "[pr-watch] All your PRs are merged ($urls ). Close the task: step 17 of your prompt." \
-      "[pr-watch] $task: all its PRs are merged ($urls ) and its coordinator is not available.${notion:+ Move its Notion task to To test and} close it with factory task-end $task. Reply in one line." &&
-      { [ "$via" = orch ] || [ -z "$notion" ] || notify "[pr-watch] $task: all its PRs are merged ($urls ). Move its Notion task to To test; its coordinator closes it. Reply in one line."; } &&
+      "[pr-watch] $task: all its PRs are merged ($urls ) and its coordinator is not available.${tracker:+ Move its tracker task to its merged status and} close it with factory task-end $task. Reply in one line." &&
+      { [ "$via" = orch ] || [ -z "$tracker" ] || notify "[pr-watch] $task: all its PRs are merged ($urls ). Move its tracker task to its merged status; its coordinator closes it. Reply in one line."; } &&
       touch "$state/$task.merged" "$state/$task.review"
   elif [ $((open + merged)) -eq "$n" ] && [ ! -e "$state/$task.review" ]; then
-    if [ -n "$notion" ]; then notify "[pr-watch] $task: PR open in all its repos ($urls ). Move its Notion task to Review. Reply in one line."; fi && touch "$state/$task.review"
+    if [ -n "$tracker" ]; then notify "[pr-watch] $task: PR open in all its repos ($urls ). Move its tracker task to its pr status. Reply in one line."; fi && touch "$state/$task.review"
   fi
 }
 

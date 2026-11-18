@@ -3,17 +3,18 @@
 # (body plus ancestor/relation/formula metadata); fetched with the MCP it stays in the caller's context for the rest
 # of its session (the orchestrator's runs all day), and the specker used to fetch it again.
 # Fetches through a tiny `claude -p` (Haiku, Notion MCP), takes the raw fetch result (no model rewrites it), keeps
-# the useful properties and the body, and writes .board/notion/<ET-n>.md. Prints only a short card: path,
+# the useful properties and the body, and writes .board/notion/<ticket>.md. Prints only a short card: path,
 # title, status, priority, SPs, short description and the body's headings.
-# Usage: notion-page <ET-n | n | notion url> [--refresh]   (a file younger than 30 min is reused)
+# Usage: notion-page <ticket | n | notion url> [--refresh]   (a file younger than 30 min is reused)
 set -euo pipefail
 . "$(dirname "$0")/lib/hub.sh"
-ref=${1:?usage: notion-page <ET-n | n | notion url> [--refresh]}; refresh=${2:-}
+ref=${1:?usage: notion-page <ticket | n | notion url> [--refresh]}; refresh=${2:-}
 dir="$HUB/.board/notion"; mkdir -p "$dir"
+pfx=$(jq -r '.notion.idPrefix // "PROJ"' "$HUB/workspace.json")   # ticket prefix: PROJ-123
 tasks=$(jq -r '.notion.tasks' "$HUB/workspace.json"); idp=$(jq -r '.notion.idProperty' "$HUB/workspace.json")
 
-if [[ $ref =~ ^([Ee][Tt]-)?([0-9]+)$ ]]; then
-  key="ET-${BASH_REMATCH[2]}"
+if [[ $ref =~ ^(${pfx}-)?([0-9]+)$ ]]; then
+  key="$pfx-${BASH_REMATCH[2]}"
   url=$(jq -r --argjson n "${BASH_REMATCH[2]}" '.[] | select(.id == $n) | .url' "$HUB/.board/notion-tasks.json" 2>/dev/null | head -1)
   ask=${url:+"Call notion-fetch with id \"$url\"."}
   sql=$(jq -nc --arg t "$tasks" --arg q "SELECT url FROM \"$tasks\" WHERE \"$idp\" = ${BASH_REMATCH[2]}" '{data: {mode: "sql", data_source_urls: [$t], query: $q}}')
